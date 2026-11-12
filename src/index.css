@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --paper-50: 0.976 0.006 110;
+    --paper-100: 0.947 0.009 110;
+    --ink-900: 0.235 0.025 155;
+    --ink-600: 0.455 0.018 155;
+    --red-600: 0.565 0.185 28;
+    --red-100: 0.93 0.035 28;
+    --green-600: 0.48 0.105 161;
+    --green-100: 0.925 0.027 161;
+
+    --background: var(--paper-50);
+    --foreground: var(--ink-900);
+    --card: 0.992 0.003 110;
+    --card-foreground: var(--ink-900);
+    --popover: 0.992 0.003 110;
+    --popover-foreground: var(--ink-900);
+    --primary: var(--red-600);
+    --primary-foreground: 0.985 0.006 70;
+    --secondary: var(--paper-100);
+    --secondary-foreground: var(--ink-900);
+    --muted: var(--paper-100);
+    --muted-foreground: var(--ink-600);
+    --accent: var(--red-100);
+    --accent-foreground: var(--red-600);
+    --destructive: var(--red-600);
+    --destructive-foreground: 0.985 0.006 70;
+    --border: 0.884 0.012 110;
+    --input: 0.86 0.014 110;
+    --ring: var(--red-600);
+    --radius: 0.75rem;
+    --sidebar-background: 0.985 0.004 110;
+    --sidebar-foreground: var(--ink-900);
+    --sidebar-primary: var(--red-600);
+    --sidebar-primary-foreground: 0.985 0.006 70;
+    --sidebar-accent: var(--paper-100);
+    --sidebar-accent-foreground: var(--ink-900);
+    --sidebar-border: var(--border);
+    --sidebar-ring: var(--red-600);
+  }
+
+  * { @apply border-border; }
+  html { background: oklch(var(--background)); }
+  body {
+    @apply m-0 bg-background text-foreground;
+    min-width: 320px;
+    min-height: 100dvh;
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button, input, select, textarea { font: inherit; }
+  button, a, select, input[type="checkbox"], input[type="range"] { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.58; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 3px solid oklch(var(--ring) / 0.35);
+    outline-offset: 2px;
+  }
+  ::selection { background: oklch(var(--red-100)); color: oklch(var(--ink-900)); }
+}
