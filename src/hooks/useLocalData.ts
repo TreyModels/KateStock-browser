@@ -24,6 +24,7 @@ function loadData(): AppData {
     const parsed = JSON.parse(raw) as AppData
     if (!Array.isArray(parsed.stocks) || !parsed.quotes || !parsed.settings) return initialData
     return {
+      goldValueCny: typeof parsed.goldValueCny === 'number' && Number.isFinite(parsed.goldValueCny) && parsed.goldValueCny >= 0 ? parsed.goldValueCny : undefined,
       stocks: parsed.stocks,
       quotes: parsed.quotes,
       settings: { ...defaultSettings, ...parsed.settings },

@@ -26,6 +26,8 @@ export function StockDialog({ open, onOpenChange, stock, quote, onSave }: StockD
 
   useEffect(() => {
     if (!open) return
+    // Reinitialize the form when editing a different stock.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCode(stock?.code ?? '')
     setName(stock?.name ?? '')
     setStatus(stock?.status ?? 'watch')
@@ -102,10 +104,10 @@ export function StockDialog({ open, onOpenChange, stock, quote, onSave }: StockD
         <form onSubmit={submit} className="mt-2 space-y-5">
           <div className="grid grid-cols-2 gap-3">
             <label className="form-field">证券代码
-              <input inputMode="numeric" maxLength={6} value={code} disabled={Boolean(stock)} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} placeholder="如 002008" />
+              <input inputMode="numeric" maxLength={6} value={code} disabled={Boolean(stock)} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} placeholder="输入 6 位证券代码" />
             </label>
             <label className="form-field">名称
-              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="如 大族激光" />
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="输入证券名称" />
             </label>
           </div>
           <label className="form-field">清单类型

@@ -1,21 +1,34 @@
-const CACHE = 'ashare-strategy-shell-v1'
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(['./'])))
-  self.skipWaiting()
+const CACHE = 'ashare-strategy-shell-v3'
+const PREFIX = 'ashare-strategy-shell-'
+self.addEventListener('install', event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE)
+    const response = await fetch('./', { cache: 'no-store' })
+    if (!response.ok) throw new Error('Cannot cache app shell')
+    const html = await response.clone().text()
+    const assets = [...html.matchAll(/(?:src|href)="(\.\/[^"?#]+)"/g)]
+      .map(match => match[1]).filter(path => /\.(?:js|css|webmanifest|png)$/.test(path))
+    await cache.put('./', response)
+    await cache.addAll([...new Set(assets)])
+    await self.skipWaiting()
+  })())
 })
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))))
-  self.clients.claim()
+self.addEventListener('activate', event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith(PREFIX) && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim()))
 })
-
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url)
-  if (event.request.method !== 'GET' || url.origin !== self.location.origin) return
-  event.respondWith(fetch(event.request).then((response) => {
-    const copy = response.clone()
-    caches.open(CACHE).then((cache) => cache.put(event.request, copy))
+self.addEventListener('fetch', event => {
+  const request = event.request
+  const url = new URL(request.url)
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return
+  event.respondWith(fetch(request).then(async response => {
+    if (response.ok) {
+      try { const cache = await caches.open(CACHE); await cache.put(request, response.clone()) } catch { /* network response remains usable */ }
+    }
     return response
-  }).catch(() => caches.match(event.request).then((cached) => cached || caches.match('./'))))
+  }).catch(async () => {
+    const cached = await caches.match(request)
+    if (cached) return cached
+    if (request.mode === 'navigate') return (await caches.match('./')) || Response.error()
+    return Response.error()
+  }))
 })

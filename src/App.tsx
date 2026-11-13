@@ -6,6 +6,10 @@ import {
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+import { ReportStatus } from '@/components/ReportStatus'
+import { mergeImportedStocks, parseStocksJson, portfolioMarkdown, readPortfolioFile } from '@/lib/stockImport'
+import { mergeSnapshotQuotes, readCachedSnapshot, saveSnapshot, snapshotSchema } from '@/lib/snapshot'
+import type { Snapshot } from '@/lib/snapshot'
 import { ResearchSettings } from '@/components/ResearchSettings'
 import { QuantsLibrary } from '@/components/QuantsLibrary'
 import { BacktestLab } from '@/components/BacktestLab'
@@ -24,7 +28,7 @@ type SignalFilter = 'all' | 'buy' | 'risk' | 'wait'
 const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'today', label: '今日', icon: LayoutDashboard },
   { id: 'stocks', label: '股票', icon: List },
-  { id: 'library', label: '50 Strategies / 策略库', icon: BookOpen },
+  { id: 'library', label: '策略库', icon: BookOpen },
   { id: 'backtest', label: '回测', icon: BarChart3 },
   { id: 'rules', label: '策略', icon: BookOpen },
   { id: 'settings', label: '我的', icon: Settings },
@@ -47,11 +51,15 @@ function App() {
   const [deleteStock, setDeleteStock] = useState<Stock | undefined>()
   const [resetOpen, setResetOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
-  const initialRefresh = useRef(false)
+  const zipRef = useRef<HTMLInputElement>(null)
+  const [report, setReport] = useState<Snapshot | null>(readCachedSnapshot)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [reportError, setReportError] = useState(false)
+  const [reportCached, setReportCached] = useState(true)
 
   const strategies = useMemo(() => data.stocks.flatMap((stock) => {
     const quote = data.quotes[stock.code]
-    return quote && /^(600|601|603|605|000|001|002)\d{3}$/.test(stock.code) ? [generateStrategy(stock, quote, data.settings)] : []
+    return quote && /^(600|601|603|605|000|001|002|510|511|512|513|515|516|518|588|159)\d{3}$/.test(stock.code) ? [generateStrategy(stock, quote, data.settings)] : []
   }), [data.stocks, data.quotes, data.settings])
 
   const selectedStrategy = strategies.find((strategy) => strategy.code === selectedCode)
@@ -61,7 +69,7 @@ function App() {
   const dateText = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
 
   async function refreshCodes(codes?: string[]) {
-    const targetCodes = (codes ?? data.stocks.map((stock) => stock.code)).filter(code => /^(600|601|603|605|000|001|002)\d{3}$/.test(code))
+    const targetCodes = (codes ?? data.stocks.map((stock) => stock.code)).filter(code => /^(600|601|603|605|000|001|002|510|511|512|513|515|516|518|588|159)\d{3}$/.test(code))
     if (!targetCodes.length || refreshing) return
     setRefreshing(true)
     setProgress([0, targetCodes.length])
@@ -77,11 +85,26 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [view])
 
+  async function loadReport() {
+    setReportLoading(true)
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}data/latest.json`, { cache: 'no-store' })
+      if (!response.ok) throw new Error('report unavailable')
+      const parsed = snapshotSchema.parse(await response.json())
+      const previous = readCachedSnapshot()
+      if (previous && (parsed.tradeDate < previous.tradeDate || (parsed.tradeDate === previous.tradeDate && parsed.generatedAt < previous.generatedAt))) throw new Error('older report')
+      saveSnapshot(parsed)
+      setReport(parsed)
+      setReportCached(false)
+      setReportError(false)
+      setData(current => ({ ...current, quotes: mergeSnapshotQuotes(current.quotes, parsed) }))
+    } catch { setReportError(true) } finally { setReportLoading(false) }
+  }
   useEffect(() => {
-    if (initialRefresh.current) return
-    initialRefresh.current = true
-    void refreshCodes()
-    // Only refresh once when the app opens.
+    const cached = readCachedSnapshot()
+    if (cached) setData(current => ({ ...current, quotes: mergeSnapshotQuotes(current.quotes, cached) }))
+    void loadReport()
+    // Load the public snapshot once; never upload private portfolio data.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -155,13 +178,39 @@ function App() {
     try {
       const parsed = JSON.parse(await file.text())
       if (!Array.isArray(parsed.stocks) || !parsed.settings || !parsed.quotes) throw new Error('invalid')
-      setData(parsed)
-      toast.success(`已导入 ${parsed.stocks.length} 条记录`)
+      const stocks = parsed.stocks.length ? parseStocksJson({ stocks: parsed.stocks }).stocks : []
+      const settings = { capital: Number(parsed.settings.capital), riskPct: Number(parsed.settings.riskPct), maxPositionPct: Number(parsed.settings.maxPositionPct), refreshOnOpen: Boolean(parsed.settings.refreshOnOpen) }
+      if (![settings.capital, settings.riskPct, settings.maxPositionPct].every(Number.isFinite) || settings.capital <= 0 || settings.riskPct <= 0 || settings.riskPct > 100 || settings.maxPositionPct <= 0 || settings.maxPositionPct > 100) throw new Error('invalid settings')
+      const quotes: Record<string, Quote> = {}
+      for (const [code, raw] of Object.entries(parsed.quotes)) {
+        const q = raw as Quote
+        if (!/^\d{6}$/.test(code) || !q || q.code !== code || !Number.isFinite(q.price) || q.price <= 0 || !Array.isArray(q.bars) || !['auto', 'manual'].includes(q.source)) continue
+        const bars = q.bars.map(b => ({ date: b.date, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume, amount: b.amount, changePct: b.changePct, turnoverPct: b.turnoverPct }))
+        const m = q.manual
+        const manual = m ? { ma5: m.ma5, ma10: m.ma10, ma20: m.ma20, high20: m.high20, atr14: m.atr14, rsi14: m.rsi14, volumeRatio: m.volumeRatio } : undefined
+        quotes[code] = { code, price: q.price, prevClose: q.prevClose, changePct: q.changePct, open: q.open, high: q.high, low: q.low, volume: q.volume, amount: q.amount, tradeDate: q.tradeDate, fetchedAt: q.fetchedAt, source: q.source, bars, manual }
+      }
+      const goldValueCny = typeof parsed.goldValueCny === 'number' && Number.isFinite(parsed.goldValueCny) && parsed.goldValueCny >= 0 ? parsed.goldValueCny : undefined
+      setData({ stocks, quotes, settings, goldValueCny })
+      toast.success(`已导入 ${stocks.length} 条记录`)
     } catch {
       toast.error('备份文件格式不正确')
     } finally {
       if (fileRef.current) fileRef.current.value = ''
     }
+  }
+
+  const importPortfolio = async (file?: File) => {
+    if (!file) return
+    try {
+      const imported = await readPortfolioFile(file)
+      const stocks = imported.stocks
+      const newCount = stocks.filter(stock => !data.stocks.some(existing => existing.code === stock.code)).length
+      setData(current => ({ ...current, stocks: mergeImportedStocks(current.stocks, stocks), goldValueCny: current.goldValueCny ?? imported.goldValueCny }))
+      toast.success(`已导入 ${newCount} 条新记录；已有记录未覆盖`)
+    } catch (error) {
+      toast.error(error instanceof Error ? `无法导入文件：${error.message}` : '无法导入文件')
+    } finally { if (zipRef.current) zipRef.current.value = '' }
   }
 
   return (
@@ -188,6 +237,9 @@ function App() {
         <main className="page-content">
           {view === 'today' && (
             <>
+              {data.goldValueCny !== undefined && <section className="report-status"><strong>黄金产品 · 手动参考价值</strong><p>¥{money.format(data.goldValueCny)} · 非实时；未确认产品代码</p></section>}
+              <ReportStatus report={report} loading={reportLoading} cached={reportCached} error={reportError} onRetry={() => void loadReport()} />
+              <ResearchSettings />
               <section className="briefing-panel">
                 <div className="briefing-copy">
                   <div className="briefing-meta"><span>DAILY PLAYBOOK</span><span>{dateText}</span></div>
@@ -267,7 +319,7 @@ function App() {
                 </select>
                 <button className="button-secondary" onClick={() => void refreshCodes()} disabled={refreshing}><RefreshCw size={16} className={refreshing ? 'spin' : ''} />更新</button>
               </div>
-              <div className="list-caption"><span>{filteredStocks.length} 条记录</span><span>截图导入已标记为历史记录</span></div>
+              <div className="list-caption"><span>{filteredStocks.length} 条记录</span><span>个人记录仅保存在当前设备</span></div>
               <div className="stock-list">
                 {filteredStocks.map((stock) => {
                   const quote = data.quotes[stock.code]
@@ -297,7 +349,7 @@ function App() {
             </section>
           )}
 
-          {view === 'library' && <><ResearchSettings /><QuantsLibrary /></>}
+          {view === 'library' && <QuantsLibrary />}
           {view === 'backtest' && <BacktestLab stocks={data.stocks} quotes={data.quotes} refreshing={refreshing} onRefresh={() => void refreshCodes()} />}
 
           {view === 'rules' && (
@@ -325,22 +377,27 @@ function App() {
                     <label className="form-field">单笔风险（%）<input type="number" min="0.2" max="2" step="0.1" value={data.settings.riskPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, riskPct: Math.min(2, Math.max(0.2, Number(event.target.value))) } }))} /></label>
                     <label className="form-field">单票仓位上限（%）<input type="number" min="1" max="50" step="1" value={data.settings.maxPositionPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, maxPositionPct: Math.min(50, Math.max(1, Number(event.target.value))) } }))} /></label>
                   </div>
-                  <label className="toggle-row settings-toggle"><span><strong>打开应用时更新行情</strong><small>也可随时手动刷新或改用手动行情</small></span><input type="checkbox" checked={data.settings.refreshOnOpen} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, refreshOnOpen: event.target.checked } }))} /></label>
+                  <p className="settings-note">打开应用时读取已发布的公共快照；如需个股最新行情，请手动刷新。</p>
                 </section>
                 <section>
-                  <div className="settings-section-title"><Smartphone size={19} /><h2>在 iPhone 上使用</h2></div>
+                  <div className="settings-section-title"><Smartphone size={19} /><h2>在 iPhone / iPad 上使用</h2></div>
                   <ol className="install-steps"><li><span>1</span>用 Safari 打开本应用</li><li><span>2</span>点击“分享”按钮</li><li><span>3</span>选择“添加到主屏幕”</li></ol>
                   <p className="settings-note">数据只保存在当前浏览器。清除网站数据会删除清单；换设备前请先导出备份。</p>
                 </section>
                 <section>
                   <div className="settings-section-title"><Database size={19} /><h2>数据与备份</h2></div>
+                  <label className="form-field">非实物黄金参考价值（元，可选）<input type="number" inputMode="decimal" min="0" value={data.goldValueCny ?? ''} onChange={(event) => { const value = event.target.value; setData(current => ({ ...current, goldValueCny: value === '' ? undefined : Math.max(0, Number(value)) })) }} /></label>
+                  <p className="settings-note">手动输入，仅保存在本设备；不是实时价格。确认具体产品后才能自动更新。</p>
                   <div className="data-actions">
-                    <button className="button-secondary" onClick={exportData}><ArrowDownToLine size={17} />导出备份</button>
+                    <button className="button-secondary" onClick={exportData}><ArrowDownToLine size={17} />导出完整备份</button>
+                    <button className="button-secondary" onClick={() => { const url = URL.createObjectURL(new Blob([portfolioMarkdown(data)], { type: 'text/markdown;charset=utf-8' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'stocks.md'; document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }}><ArrowDownToLine size={17} />导出 Markdown 清单</button>
                     <button className="button-secondary" onClick={() => fileRef.current?.click()}><Upload size={17} />导入备份</button>
+                    <button className="button-secondary" onClick={() => zipRef.current?.click()}><Upload size={17} />导入清单文件</button>
+                    <input ref={zipRef} type="file" accept=".zip,.json,.md,.txt,text/plain,text/markdown,application/json,application/zip" className="hidden" onChange={(event) => void importPortfolio(event.target.files?.[0])} />
                     <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => void importData(event.target.files?.[0])} />
                   </div>
-                  <p className="settings-note">导入会替换当前清单、行情缓存与风险参数，请先用备份恢复误删数据。</p>
-                  <button className="text-button danger-text" onClick={() => setResetOpen(true)}><History size={15} />恢复截图初始清单</button>
+                  <p className="settings-note">JSON 备份导入会替换当前数据，请先导出。清单支持 JSON、Markdown、文本或 ZIP（内含 stocks.json / stocks.md / stocks.txt），只添加新股票，已有记录和黄金价值不会覆盖。ZIP 中的其他文件（包括密钥）会被忽略。Markdown 包含私人财务信息，请妥善保存。定时 AI 密钥须在 GitHub Actions 机密中单独设置。</p>
+                  <button className="text-button danger-text" onClick={() => setResetOpen(true)}><History size={15} />清空当前设备数据</button>
                 </section>
               </div>
             </section>
@@ -358,7 +415,7 @@ function App() {
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>移除{deleteStock?.name}？</AlertDialogTitle><AlertDialogDescription>该股票及其本地行情缓存会被移除，此操作可通过备份恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground">确认移除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>恢复初始清单？</AlertDialogTitle><AlertDialogDescription>当前修改会被替换为截图中的 29 条历史记录。建议先导出备份。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={() => { resetData(); setResetOpen(false); toast.success('已恢复截图初始清单') }}>确认恢复</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>清空当前设备数据？</AlertDialogTitle><AlertDialogDescription>当前清单、行情缓存与设置会被清空。建议先导出备份，之后可以重新导入。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={() => { resetData(); setResetOpen(false); toast.success('已清空当前设备数据') }}>确认清空</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
       <Toaster position="top-center" richColors closeButton />
     </div>

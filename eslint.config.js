@@ -20,4 +20,9 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Shared UI modules intentionally export both components and their variants.
+    files: ['src/components/ui/**/*.{ts,tsx}', 'src/components/StrategyCard.tsx'],
+    rules: { 'react-refresh/only-export-components': 'off' },
+  },
 ])

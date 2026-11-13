@@ -21,7 +21,7 @@ export interface Bar {
   volume: number
   amount: number
   changePct: number
-  turnoverPct: number
+  turnoverPct?: number
 }
 
 export interface ManualIndicators {
@@ -47,6 +47,8 @@ export interface Quote {
   tradeDate: string
   fetchedAt: string
   source: DataSource
+  provider?: string
+  adjustment?: string
   bars: Bar[]
   manual?: ManualIndicators
 }
@@ -83,6 +85,7 @@ export interface Strategy {
 }
 
 export interface AppData {
+  goldValueCny?: number
   stocks: Stock[]
   quotes: Record<string, Quote>
   settings: RiskSettings

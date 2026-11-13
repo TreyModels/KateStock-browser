@@ -107,7 +107,7 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
   const [frameIndex, setFrameIndex] = useState(20)
   const [playing, setPlaying] = useState(false)
   const stock = stocks.find((item) => item.code === selectedCode)
-  const bars = quotes[selectedCode]?.bars ?? []
+  const bars = useMemo(() => quotes[selectedCode]?.bars ?? [], [quotes, selectedCode])
   const results = useMemo(() => runAllBacktests(bars), [bars])
   const selected = results.find((result) => result.id === selectedId) ?? results[0]
   const best = [...results].sort((a, b) => b.score - a.score)[0]
@@ -123,6 +123,8 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
   }), [stocks, quotes])
 
   useEffect(() => {
+    // Reset playback when the selected series changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (bars.length) setFrameIndex(bars.length - 1)
     setPlaying(false)
   }, [selectedCode, selectedId, bars.length])
@@ -134,6 +136,8 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
   }, [playing, bars.length])
 
   useEffect(() => {
+    // Stop playback once it reaches the end of the series.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (frameIndex >= bars.length - 1) setPlaying(false)
   }, [frameIndex, bars.length])
 

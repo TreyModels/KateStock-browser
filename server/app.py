@@ -7,7 +7,7 @@ os.makedirs(os.path.dirname(DB),exist_ok=True)
 AUTH=os.environ['AUTH_TOKEN']; cipher=Fernet(os.environ['KEY_ENCRYPTION_KEY'].encode())
 lock=threading.Lock()
 def db():
- c=sqlite3.connect(DB);c.execute('CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY, secret BLOB, enabled INTEGER DEFAULT 0, daily_cap INTEGER DEFAULT 1)');c.execute('INSERT OR IGNORE INTO settings(id) VALUES(1)');c.execute('CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, created TEXT, status TEXT, output TEXT)');c.commit();return c
+ c=sqlite3.connect(DB);c.execute('CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY, secret BLOB, enabled INTEGER DEFAULT 0, daily_cap INTEGER DEFAULT 1)');c.execute('INSERT OR IGNORE INTO settings(id) VALUES(1)');c.execute('CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, created TEXT, status TEXT, output TEXT)');c.execute('CREATE TABLE IF NOT EXISTS chat_usage(day TEXT PRIMARY KEY, count INTEGER NOT NULL)');c.commit();return c
 with db():pass
 def research():
  if not lock.acquire(False): return
@@ -58,8 +58,29 @@ class Handler(SimpleHTTPRequestHandler):
      if body.get('deleteKey'):c.execute('UPDATE settings SET secret=NULL,enabled=0 WHERE id=1')
      if 'enabled' in body:c.execute('UPDATE settings SET enabled=? WHERE id=1',(int(bool(body['enabled'])),))
     return self.send_json({'ok':True})
+   if self.path=='/api/chat':
+    prompt=body.get('message')
+    if not isinstance(prompt,str) or not prompt.strip() or len(prompt)>1500:return self.send_json({'error':'Message must be 1–1500 characters'},400)
+    day=datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    with lock:
+     with db() as c:
+      secret=c.execute('SELECT secret FROM settings WHERE id=1').fetchone()[0]
+      key=os.environ.get('DEEPSEEK_API_KEY') or (cipher.decrypt(secret).decode() if secret else '')
+      if not key:return self.send_json({'error':'DeepSeek is not configured'},503)
+      cap=max(1,min(int(os.environ.get('CHAT_DAILY_CAP','20')),100))
+      row=c.execute('SELECT count FROM chat_usage WHERE day=?',(day,)).fetchone()
+      if row and row[0]>=cap:return self.send_json({'error':'Daily research limit reached'},429)
+      c.execute('INSERT INTO chat_usage(day,count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,));c.commit()
+    payload={'model':'deepseek-flash','thinking':{'type':'disabled'},'max_tokens':500,'messages':[{'role':'system','content':'用简体中文提供简洁的金融研究说明。你没有实时行情、用户持仓或网络检索。不得编造实时价格、新闻或引用，不给具体交易指令或收益承诺。明确说明未知信息。'}, {'role':'user','content':prompt.strip()}]}
+    try:
+     req=urllib.request.Request('https://api.deepseek.com/chat/completions',data=json.dumps(payload,ensure_ascii=False).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+key})
+     with urllib.request.urlopen(req,timeout=45) as response:result=json.load(response)
+     answer=result['choices'][0]['message']['content']
+     if not isinstance(answer,str) or not answer.strip() or len(answer)>6000:raise ValueError('Invalid response')
+     return self.send_json({'text':answer.strip(),'disclaimer':'AI 研究说明，不含实时行情，不构成投资建议。'})
+    except Exception:return self.send_json({'error':'DeepSeek unavailable; try again later'},502)
    if self.path=='/api/research':threading.Thread(target=research,daemon=True).start();return self.send_json({'ok':True},202)
    return self.send_json({'error':'Unknown endpoint'},404)
   except Exception:return self.send_json({'error':'Invalid request'},400)
 threading.Thread(target=scheduler,daemon=True).start()
-ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','8080'))),Handler).serve_forever()
+ThreadingHTTPServer((os.getenv('BIND_ADDRESS','0.0.0.0'),int(os.getenv('PORT','8080'))),Handler).serve_forever()
