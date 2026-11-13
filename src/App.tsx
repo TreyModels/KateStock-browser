@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+import { PublicStocks } from '@/components/PublicStocks'
 import { ReportStatus } from '@/components/ReportStatus'
 import { mergeImportedStocks, parseStocksJson, portfolioMarkdown, readPortfolioFile } from '@/lib/stockImport'
 import { mergeSnapshotQuotes, readCachedSnapshot, saveSnapshot, snapshotSchema } from '@/lib/snapshot'
@@ -239,6 +240,7 @@ function App() {
             <>
               {data.goldValueCny !== undefined && <section className="report-status"><strong>黄金产品 · 手动参考价值</strong><p>¥{money.format(data.goldValueCny)} · 非实时；未确认产品代码</p></section>}
               <ReportStatus report={report} loading={reportLoading} cached={reportCached} error={reportError} onRetry={() => void loadReport()} />
+              <PublicStocks report={report} stocks={data.stocks} onImport={() => setView('settings')} />
               <ResearchSettings />
               <section className="briefing-panel">
                 <div className="briefing-copy">
