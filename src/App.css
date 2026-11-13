@@ -409,3 +409,10 @@
 @media (min-width: 700px) { .public-stocks-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (min-width: 1100px) { .public-stocks-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 390px) { .public-stocks { padding: 16px; } .public-stock { padding: 9px; } }
+
+.public-stock { flex-wrap: wrap; }
+.public-stock-signal { flex: 1 0 100%; padding-top: 9px; border-top: 1px solid #e0e9e2; }
+.public-stock-signal strong { color: #28513a; }
+.public-stock-signal span { color: #63756a; font-size: 12px; }
+.public-stock-signal p { margin: 4px 0; color: #4d6054; font-size: 12px; line-height: 1.5; }
+.public-stock-signal summary { min-height: 34px; padding-top: 6px; color: #315e42; font-size: 12px; cursor: pointer; }

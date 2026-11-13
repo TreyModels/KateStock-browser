@@ -3,8 +3,13 @@ import json
 import re
 from pathlib import Path
 snapshot = json.loads(Path('public/data/latest.json').read_text(encoding='utf-8'))
-if set(snapshot) != {'schemaVersion', 'generatedAt', 'tradeDate', 'source', 'sourceUrl', 'partial', 'failures', 'coverage', 'quotes', 'ai'}:
+if set(snapshot) != {'schemaVersion', 'generatedAt', 'tradeDate', 'source', 'sourceUrl', 'partial', 'failures', 'coverage', 'quotes', 'ai', 'signals', 'strategyVersion'}:
     raise SystemExit('Unexpected report fields')
+if set(snapshot['signals']) != set(snapshot['quotes']) or snapshot['strategyVersion'] != 'katestock-rules-v1':
+    raise SystemExit('Invalid signal coverage')
+for signal in snapshot['signals'].values():
+    if set(signal) != {'action','actionLabel','score','summary','reasons','indicators'}:
+        raise SystemExit('Unexpected private or invalid signal fields')
 if set(snapshot['ai']) != {'status', 'text', 'model'} or snapshot['ai']['status'] not in {'available','unavailable'}:
     raise SystemExit('Unexpected AI fields')
 for q in snapshot['quotes'].values():

@@ -27,6 +27,7 @@ jobs:
       - run: pip install 'akshare==1.17.86'
       - run: npm ci
       - run: python scripts/ingest.py
+      - run: node --experimental-strip-types scripts/generate_signals.mjs
       - run: python scripts/ai_brief.py
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
