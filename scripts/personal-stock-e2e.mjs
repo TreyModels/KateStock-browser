@@ -223,6 +223,7 @@ async function main() {
         source: q.source,
       }
     }, { key: STORAGE_KEY, code: CODE })
+    report.quote = { provider: quote.provider ?? null, adjustment: quote.adjustment ?? null, bars: quote.bars, price: quote.price, tradeDate: quote.tradeDate }
     step('拿到日线', JSON.stringify(quote))
 
     /* ── 5. 断言：股票行/策略卡有价格 ── */
@@ -348,6 +349,10 @@ function writeReport() {
   for (const entry of report.network.tencentKline.slice(0, 8)) lines.push(`  - ${JSON.stringify(entry)}`)
   lines.push(`- 新浪 JSONP 记录 ${report.network.sinaKline.length} 条：`)
   for (const entry of report.network.sinaKline.slice(0, 8)) lines.push(`  - ${JSON.stringify(entry)}`)
+  lines.push('', '## 数据口径说明（重要）', '')
+  lines.push('- 东财（push2his）与腾讯（fqkline）是**前复权**；新浪日线回退是**不复权**（Quote.adjustment 已标注 `不复权（tushare 未验证）`）。')
+  lines.push('- 混源差异：同一页面里不同股票的均线/ATR/RSI（基于各自 bars）口径可能不一致；策略价位不能跨数据源直接比较。个人清单若混源，建议以同一数据源为准，或重要决策前核对 `adjustment`。')
+  lines.push('- 本轮实际：provider=' + (report.quote?.provider ?? '—') + '；adjustment=' + (report.quote?.adjustment ?? '—') + '。生产网络优先东财/腾讯前复权，新浪仅作腾讯 501 时的兜底。')
   lines.push('', '## 截图', '')
   for (const shot of report.screenshots) lines.push(`- \`${shot}\``)
   lines.push('', '## 复现命令', '', '```bash', 'cd kate-dashboard', 'PATH=/opt/homebrew/bin:$PATH \\', 'PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers \\', 'PLAYWRIGHT_MODULE=/tmp/pw-tools/node_modules/playwright \\', 'node scripts/personal-stock-e2e.mjs', '```', '')
