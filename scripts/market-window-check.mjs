@@ -485,6 +485,9 @@ async function main() {
       holdingQuote = fetched.quote
       holdingSource = `${fetched.meta.source}（真实日线，bars=${fetched.meta.bars}，tradeDate=${fetched.meta.tradeDate}）`
       seedWarnings.push(`${HOLDING_CODE} 不在 public-universe.json 的 29 只里、快照无 bars；已用腾讯 fqkline 真实日线注入（不是 mock），否则持仓卡无价位。`)
+      if (fetched.meta.tradeDate !== beijingDate(now)) {
+        seedWarnings.push(`${HOLDING_CODE} fqkline 最后 bar = ${fetched.meta.tradeDate}（非今天）：持仓卡价位基于该交易日 EOD；若期望含当日盘中 bar，请确认腾讯 fqkline 在盘中是否返回今日数据。`)
+      }
     } catch (error) {
       seedWarnings.push(`${HOLDING_CODE} 无快照 bars 且 fqkline 拉取失败（${error.message}）：持仓策略卡可能缺失。`)
     }
@@ -578,8 +581,12 @@ async function main() {
     if (wait > 0) await sleep(wait)
     const data = await samplePage(page)
     const shot = `docs/screenshots/market-window-t${index}.png`
-    await page.screenshot({ path: join(ROOT, shot), fullPage: true })
-    screenshots.push(shot)
+    try {
+      await page.screenshot({ path: join(ROOT, shot), fullPage: true })
+      screenshots.push(shot)
+    } catch (error) {
+      log(`截图失败（不影响采样/断言）：${error.message}`)
+    }
     samples.push({
       at: Date.now(),
       data,
