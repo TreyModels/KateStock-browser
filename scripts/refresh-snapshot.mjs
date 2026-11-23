@@ -2,12 +2,17 @@
 /**
  * 本地快照生成器（Node 版，替代 GitHub Actions + Python akshare）。
  *
- * 作用：读取 scripts/public-universe.json 的公开清单，拉取日线（腾讯 fqkline 优先、东财 push2his 兜底），
+ * 作用：读取 scripts/public-universe.json 的公开清单，拉取日线（腾讯 fqkline → 新浪 JSON → 东财 push2his），
  * 生成 public/data/latest.json，供页面在无后端时使用；全部离线逻辑可单测，运行时才访问网络。
  *
  * 数据源（2026-11-24 实测）：
  *   - 腾讯：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,320,qfq
  *     → data.<symbol>.qfqday = [[date,open,close,high,low,volume], ...]，带 CORS，前复权，无 amount（置 0）。
+ *     07:44 起本机被 501 WAF 挑战页拦截（不是永久不可用，仍作为第一优先）。
+ *   - 新浪：https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh600519&scale=240&ma=no&datalen=320
+ *     → [{ day, open, high, low, close, volume }, ...]，**不复权**、volume 单位「股」（÷100 转「手」）、无 amount。
+ *     复权口径实测：600519 2025-07-29 腾讯 qfq 1387.019 vs 新浪 1439.000（比值 0.9639），2026-11-23 两者相等
+ *     → 差异随除权除息累积，新浪确为不复权；quotes[].adjustment 如实标 '不复权（tushare 未验证）'。
  *   - 东财：https://push2his.eastmoney.com/api/qt/stock/kline/get?...
  *     → data.klines = ['date,open,close,high,low,volume,amount,...,changePct,...,turnoverPct']，
  *     本机常被反爬（Empty reply/52），允许失败。
@@ -30,11 +35,17 @@ const DEFAULT_UNIVERSE_PATH = resolve(SCRIPT_DIR, 'public-universe.json')
 const DEFAULT_OUTPUT_PATH = 'public/data/latest.json'
 
 const TENCENT_ENDPOINT = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+const SINA_ENDPOINT = 'https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData'
 const EASTMONEY_ENDPOINT = 'https://push2his.eastmoney.com/api/qt/stock/kline/get'
 const SOURCE_URL_TENCENT = 'https://web.ifzq.gtimg.cn/'
+const SOURCE_URL_SINA = 'https://quotes.sina.cn/'
 const SOURCE_URL_EASTMONEY = 'https://www.eastmoney.com/'
 const PROVIDER_TENCENT = 'Tencent fqkline (qfq)'
+const PROVIDER_SINA = 'Sina kline (不复权)'
 const PROVIDER_EASTMONEY = 'Eastmoney daily OHLCV (前复权)'
+const ADJUSTMENT_QFQ = '前复权'
+const ADJUSTMENT_SINA = '不复权（tushare 未验证）'
+const SINA_DATALEN = 320
 const STRATEGY_VERSION = 'katestock-rules-v1'
 const STRATEGY_SETTINGS = { capital: 100000, riskPct: 1, maxPositionPct: 10, refreshOnOpen: false }
 
@@ -162,6 +173,40 @@ export function parseTencentBars(payload, code) {
 }
 
 /**
+ * 解析新浪 JSON：`[{ day, open, high, low, close, volume }, ...]`（按日期升序，volume 单位「股」）。
+ * 新浪此接口为**不复权**原始价（见文件头实测），volume ÷100 转「手」以对齐东财/腾讯口径，amount=0。
+ * changePct 用前收计算（首根 0）。
+ */
+export function parseSinaBars(payload) {
+  if (!Array.isArray(payload) || payload.length === 0) throw new Error('新浪响应不是有效日线数组')
+  const bars = []
+  for (const row of payload) {
+    if (!isRecord(row)) throw new Error('新浪日线格式非法')
+    const date = typeof row.day === 'string' ? row.day : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('新浪日线日期非法')
+    const volumeShares = Number(row.volume)
+    const bar = {
+      date,
+      open: Number(row.open),
+      close: Number(row.close),
+      high: Number(row.high),
+      low: Number(row.low),
+      // 新浪 volume 单位「股」；东财/腾讯是「手」，÷100 取整保持 Quote.volume 口径一致
+      volume: Number.isFinite(volumeShares) && volumeShares >= 0 ? Math.round(volumeShares / 100) : NaN,
+      amount: 0,
+      changePct: 0,
+    }
+    if (!isValidBar(bar)) throw new Error(`新浪日线 OHLCV 非法（${date}）`)
+    bars.push(bar)
+  }
+  for (let index = 1; index < bars.length; index += 1) {
+    const previousClose = bars[index - 1].close
+    bars[index].changePct = previousClose > 0 ? (bars[index].close / previousClose - 1) * 100 : 0
+  }
+  return assertValidBars(bars, '新浪')
+}
+
+/**
  * 解析东财 push2his 响应：data.klines = ['date,open,close,high,low,volume,amount,?,changePct,?,turnoverPct']。
  * 与 scripts/ingest.py 的字段顺序一致。
  */
@@ -208,7 +253,7 @@ export function selectTradeDate(barsList) {
  * bars → Quote（字段与 scripts/ingest.py 等价）。
  * 要求：bars ≥21、日期严格递增、最后一根日期 = tradeDate；取最后 160 根。
  */
-export function buildQuote(code, bars, { provider, tradeDate, fetchedAt }) {
+export function buildQuote(code, bars, { provider, adjustment = ADJUSTMENT_QFQ, tradeDate, fetchedAt }) {
   if (!/^\d{6}$/.test(code)) throw new Error(`代码非法：${code}`)
   if (!Array.isArray(bars)) throw new Error(`${code} 缺少日线`)
   assertValidBars(bars, `${code} `)
@@ -230,7 +275,7 @@ export function buildQuote(code, bars, { provider, tradeDate, fetchedAt }) {
     fetchedAt,
     source: 'auto',
     provider,
-    adjustment: '前复权',
+    adjustment,
     bars: kept,
   }
 }
@@ -261,9 +306,20 @@ export function buildSnapshot({ quotes, failures, universeSize, tradeDate, gener
   if (!tradeDate) throw new Error('没有可用交易日（quotes 为空）')
   if (!Object.keys(quotes).length) throw new Error('No valid current quotes; last-good snapshot must remain untouched')
 
-  const providers = [...new Set(Object.values(quotes).map((quote) => quote.provider).filter(Boolean))]
-  const source = providers.length ? `${providers.sort().join(' / ')} (前复权)` : 'Tencent fqkline (qfq) (前复权)'
-  const sourceUrl = providers.includes(PROVIDER_TENCENT) || !providers.length ? SOURCE_URL_TENCENT : SOURCE_URL_EASTMONEY
+  const providers = [...new Set(Object.values(quotes).map((quote) => quote.provider).filter(Boolean))].sort()
+  const adjustments = [...new Set(Object.values(quotes).map((quote) => quote.adjustment).filter(Boolean))].sort()
+  const adjustmentSuffix =
+    adjustments.length === 1
+      ? ` (${adjustments[0]})`
+      : adjustments.length > 1
+        ? `（复权口径混合：${adjustments.join(' / ')}）`
+        : ''
+  const source = providers.length ? `${providers.join(' / ')}${adjustmentSuffix}` : `Tencent fqkline (qfq) (${ADJUSTMENT_QFQ})`
+  const sourceUrl = providers.includes(PROVIDER_TENCENT)
+    ? SOURCE_URL_TENCENT
+    : providers.includes(PROVIDER_SINA)
+      ? SOURCE_URL_SINA
+      : SOURCE_URL_EASTMONEY
 
   const calendar = beijingCalendar(now)
   let coverage = `公开清单（${universeSize}只），非全市场`
@@ -286,7 +342,7 @@ export function buildSnapshot({ quotes, failures, universeSize, tradeDate, gener
     // 本地生成器不调用 AI：显式标记 unavailable（scripts/check_public.py 的发布结构要求该字段存在）
     ai: {
       status: 'unavailable',
-      text: '本地快照生成器基于腾讯/东财日线，不生成 AI 点评；盘中提醒与策略信号不受影响。',
+      text: '本地快照生成器基于腾讯/新浪/东财日线，不生成 AI 点评；盘中提醒与策略信号不受影响。',
       model: 'deepseek-flash',
     },
   }
@@ -326,6 +382,10 @@ function tencentUrl(code) {
   return `${TENCENT_ENDPOINT}?param=${tencentSymbol(code)},day,,,320,qfq`
 }
 
+function sinaUrl(code) {
+  return `${SINA_ENDPOINT}?symbol=${tencentSymbol(code)}&scale=240&ma=no&datalen=${SINA_DATALEN}`
+}
+
 function eastmoneyUrl(code) {
   const end = new Date()
   end.setDate(end.getDate() - 300)
@@ -342,20 +402,28 @@ function eastmoneyUrl(code) {
   return `${EASTMONEY_ENDPOINT}?${params.toString()}`
 }
 
-/** 单只：腾讯优先 → 东财兜底 → 返回 error（不抛，交给汇总）。 */
+/** 单只：腾讯优先 → 新浪 → 东财兜底 → 返回 error（不抛，交给汇总）。 */
 export async function fetchBarsForCode(code, options = {}) {
+  let tencentError
   try {
     const payload = await fetchJson(tencentUrl(code), options)
-    return { code, bars: parseTencentBars(payload, code), provider: PROVIDER_TENCENT }
-  } catch (tencentError) {
-    try {
-      const payload = await fetchJson(eastmoneyUrl(code), options)
-      return { code, bars: parseEastmoneyBars(payload), provider: PROVIDER_EASTMONEY }
-    } catch (eastmoneyError) {
-      const message = eastmoneyError instanceof Error ? eastmoneyError.message : String(eastmoneyError)
-      const tencentMessage = tencentError instanceof Error ? tencentError.message : String(tencentError)
-      return { code, error: `腾讯失败（${tencentMessage}）；东财失败（${message}）` }
-    }
+    return { code, bars: parseTencentBars(payload, code), provider: PROVIDER_TENCENT, adjustment: ADJUSTMENT_QFQ }
+  } catch (error) {
+    tencentError = error
+  }
+  let sinaError
+  try {
+    const payload = await fetchJson(sinaUrl(code), options)
+    return { code, bars: parseSinaBars(payload), provider: PROVIDER_SINA, adjustment: ADJUSTMENT_SINA }
+  } catch (error) {
+    sinaError = error
+  }
+  try {
+    const payload = await fetchJson(eastmoneyUrl(code), options)
+    return { code, bars: parseEastmoneyBars(payload), provider: PROVIDER_EASTMONEY, adjustment: ADJUSTMENT_QFQ }
+  } catch (eastmoneyError) {
+    const message = (error) => (error instanceof Error ? error.message : String(error))
+    return { code, error: `腾讯失败（${message(tencentError)}）；新浪失败（${message(sinaError)}）；东财失败（${message(eastmoneyError)}）` }
   }
 }
 
@@ -396,7 +464,7 @@ export async function refreshSnapshot(options = {}) {
   const failures = []
   const validBars = []
   for (const result of results) {
-    if (result.bars) validBars.push({ code: result.code, bars: result.bars, provider: result.provider })
+    if (result.bars) validBars.push({ code: result.code, bars: result.bars, provider: result.provider, adjustment: result.adjustment })
     else failures.push(`${result.code}: ${result.error}`)
   }
 
@@ -419,6 +487,7 @@ export async function refreshSnapshot(options = {}) {
     try {
       quotes[entry.code] = buildQuote(entry.code, entry.bars, {
         provider: entry.provider,
+        adjustment: entry.adjustment,
         tradeDate,
         fetchedAt: generatedAt,
       })

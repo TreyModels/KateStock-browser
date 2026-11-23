@@ -129,11 +129,31 @@ async function fetchBuffer(url, { timeout = 12_000, headers = {} } = {}) {
       signal: controller.signal,
       headers: { 'User-Agent': 'Mozilla/5.0 KateStock/2.1 qa-market-window', ...headers },
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}`)
+      error.status = response.status
+      try {
+        error.bodySnippet = (await response.text()).slice(0, 240)
+      } catch {
+        error.bodySnippet = ''
+      }
+      throw error
+    }
     return Buffer.from(await response.arrayBuffer())
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** 把 fetch 失败分类成「WAF 501 / HTTP 错误 / 超时 / 网络错误」，供 probe 与降级报告使用。 */
+function describeFetchError(error) {
+  if (!error) return '未知错误'
+  const body = typeof error.bodySnippet === 'string' && error.bodySnippet ? `；响应片段 ${JSON.stringify(error.bodySnippet.slice(0, 120))}` : ''
+  if (error.status === 501) return `HTTP 501（WAF/反爬挑战页：数据源侧限制，不是网络故障）${body}`
+  if (error.status) return `HTTP ${error.status}（服务端错误）${body}`
+  if (error.name === 'AbortError' || /abort|timeout/i.test(String(error.message))) return `超时（请求超时）${body}`
+  const cause = error.cause?.code ? ` / ${error.cause.code}` : ''
+  return `网络错误（${error.message}${cause}）`
 }
 function decodeGbk(buffer) {
   try {
@@ -406,7 +426,7 @@ async function nodeProbe() {
       )
     }
   } catch (error) {
-    console.log('  失败:', error.message)
+    console.log('  失败:', describeFetchError(error))
   }
 
   console.log('\n--- 腾讯 fqkline 日线（前复权） ---')
@@ -424,7 +444,7 @@ async function nodeProbe() {
       )
       console.log('  原始片段:', JSON.stringify(raw.slice(0, 200)), t.valid ? '' : '')
     } catch (error) {
-      console.log(`  ${code}: 失败 ${error.message}`)
+      console.log(`  ${code}: 失败 ${describeFetchError(error)}`)
     }
   }
 
@@ -441,10 +461,11 @@ async function nodeProbe() {
     console.log(`  ${code}: ${last ? `last=${last.split(',').slice(0, 6).join(',')}` : '无数据'} → ${last && last.startsWith(beijingDate(now)) ? '含今天 bar' : '最后 bar 为旧日期'}`)
     console.log('  原始片段:', JSON.stringify(raw.slice(0, 200)))
   } catch (error) {
-    console.log('  失败:', error.message)
+    console.log('  失败:', describeFetchError(error))
   }
 
   console.log('\n结论:', trading ? '当前在交易窗口内' : '当前为非交易时段：上述三源返回旧时间戳/上一交易日数据属预期')
+  console.log('提示: fqkline 若显示 HTTP 501，是数据源侧 WAF/反爬挑战页（不是脚本 bug、也不是本机网络故障）；主脚本会优雅降级，告警链路候选只依赖公开快照 29 只。')
   const anyOk = results.gtimg || results.fqkline || results.eastmoneyKline
   process.exitCode = anyOk ? 0 : 1
 }
@@ -568,6 +589,7 @@ function buildReport({ now, seedInfo, alertSelection, alertPipeline, naturalAler
   lines.push(`- ${WATCH_CODE}：${seedInfo.watch}`)
   lines.push(`- ${HOLDING_CODE}：${seedInfo.holding}`)
   lines.push(`- 告警链路候选（脚本注入 holding）：${alertSelection?.selected ? `${alertSelection.selected.code}（cost=${alertSelection.cost}，shares=100）` : '无候选'}`)
+  lines.push(`- 候选来源：公开快照 ${alertSelection?.candidateCodes ?? 0} 只（真实 bars + 腾讯 gtimg 实时价）；**不依赖 ${HOLDING_CODE}/腾讯 fqkline**，故 fqkline 被 WAF 501 时告警链路仍可验。`)
   if (seedInfo.warnings.length) {
     lines.push('', '⚠️ 说明：')
     for (const warning of seedInfo.warnings) lines.push(`- ${warning}`)
@@ -688,7 +710,13 @@ async function main() {
         seedWarnings.push(`${HOLDING_CODE} fqkline 最后 bar = ${fetched.meta.tradeDate}（非今天）：持仓卡价位基于该交易日 EOD；若期望含当日盘中 bar，请确认腾讯 fqkline 在盘中是否返回今日数据。`)
       }
     } catch (error) {
-      seedWarnings.push(`${HOLDING_CODE} 无快照 bars 且 fqkline 拉取失败（${error.message}）：持仓策略卡可能缺失。`)
+      const reason = describeFetchError(error)
+      holdingSource = `不可用（${reason}）；按降级口径改用 ${WATCH_CODE}/公开快照，不影响告警链路`
+      seedWarnings.push(
+        `${HOLDING_CODE} 无快照 bars 且腾讯 fqkline 不可用（${reason}）：${HOLDING_CODE} 策略卡可能缺失；` +
+          `脚本不中断、不因此判 FAIL，改用 ${WATCH_CODE}/公开快照继续；告警链路实弹候选只从公开 29 只快照选取，不依赖 ${HOLDING_CODE}/fqkline。`,
+      )
+      console.log(`⚠️ ${HOLDING_CODE} 日线不可用（${reason}）：优雅降级继续，候选改用公开 29 只。`)
     }
   }
   let holdingCost = 0
@@ -709,8 +737,10 @@ async function main() {
   // ── 告警链路实弹（二级检查）：真实实时价 × 快照 bars 选一只 ma20>当前价 的 holding，
   //    cost 设为 EOD close×1.2 → 必然进入 costStop 分支（action=stop，stop 位在现价上方）。
   //    只注入「持仓关系/成本价」，行情仍是真实快照 bars + 真实实时报价，不伪造价格。 ──
+  // 候选只用公开快照 29 只（真实 bars），与 600519 种子/fqkline 是否可用完全解耦
   const alertSelection = await selectAlertCandidate(snapshot)
   const alertCandidate = alertSelection.selected
+  console.log(`告警链路候选来源：公开快照 ${alertSelection.candidateCodes} 只（不依赖 ${HOLDING_CODE}/fqkline）；实时报价 ${alertSelection.liveCount} 只`)
   if (alertCandidate) {
     const candidateQuote = quoteFromSnapshot(snapshot, alertCandidate.code)
     if (candidateQuote) quotes[alertCandidate.code] = candidateQuote

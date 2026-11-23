@@ -7,7 +7,9 @@ import {
   beijingCalendar,
   buildQuote,
   buildSnapshot,
+  fetchBarsForCode,
   parseEastmoneyBars,
+  parseSinaBars,
   parseTencentBars,
   refreshSnapshot,
   selectTradeDate,
@@ -368,4 +370,119 @@ test('refreshSnapshot：部分代码失败 → partial=true、failures 记录、
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+/* ─────────────────────────────────────────────────────────────
+ * 5) 新浪日线（腾讯 501 时的第二源；不复权）
+ *
+ * fixture 结构来自 2026-11-24 实测：
+ *   https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh600519&scale=240&ma=no&datalen=320
+ *   → [{ day, open, high, low, close, volume }, ...]；不复权、volume 单位「股」。
+ * ───────────────────────────────────────────────────────────── */
+
+function makeSinaRows(count, endDate = TRADE_DATE, startPrice = 100) {
+  return makeKlineRows(count, endDate, startPrice).map((row) => ({
+    day: row[0],
+    open: row[1],
+    close: row[2],
+    high: row[3],
+    low: row[4],
+    volume: '100000', // 新浪 volume 单位「股」→ 100000 股 = 1000 手
+  }))
+}
+
+test('新浪 JSON → bars：字段映射、volume 股→手、amount=0、changePct 按前收', () => {
+  const rows = makeSinaRows(24)
+  const bars = parseSinaBars(rows)
+  assert.equal(bars.length, 24)
+  assert.equal(bars[0].date, rows[0].day)
+  assert.equal(bars[0].changePct, 0)
+  const last = bars.at(-1)
+  assert.equal(last.date, TRADE_DATE)
+  assert.equal(last.close, Number(rows.at(-1).close))
+  assert.equal(last.amount, 0)
+  assert.equal(last.volume, 1000) // 100000 股 ÷100
+  const expected = (Number(rows.at(-1).close) / Number(rows.at(-2).close) - 1) * 100
+  assert.ok(Math.abs(last.changePct - expected) < 1e-9)
+})
+
+test('新浪 bars 拒绝：不足 21 根 / 日期倒序 / 结构非法', () => {
+  assert.throws(() => parseSinaBars(makeSinaRows(20)), /日线不足/)
+  assert.throws(() => parseSinaBars([...makeSinaRows(24)].reverse()), /日期非严格递增/)
+  assert.throws(() => parseSinaBars([]), /不是有效日线数组/)
+  assert.throws(() => parseSinaBars(null), /不是有效日线数组/)
+})
+
+test('buildQuote 支持不复权 adjustment（不冒充前复权）', () => {
+  const quote = buildQuote('600519', parseSinaBars(makeSinaRows(24)), {
+    provider: 'Sina kline (不复权)',
+    adjustment: '不复权（tushare 未验证）',
+    tradeDate: TRADE_DATE,
+    fetchedAt: FIXTURE_NOW.toISOString(),
+  })
+  assert.equal(quote.provider, 'Sina kline (不复权)')
+  assert.equal(quote.adjustment, '不复权（tushare 未验证）')
+})
+
+/** 腾讯 501 → 新浪 JSON 成功；东财若被请求即测试失败。 */
+function sinaAwareFetcher(rowsByCode, calls) {
+  return async (url) => {
+    calls.push(String(url))
+    if (url.includes('web.ifzq.gtimg.cn')) return { ok: false, status: 501 }
+    if (url.includes('quotes.sina.cn')) {
+      const match = /symbol=(sh|sz)(\d{6})/.exec(url)
+      const code = match?.[2]
+      if (code && rowsByCode[code]) return { ok: true, json: async () => rowsByCode[code] }
+      return { ok: false, status: 404 }
+    }
+    if (url.includes('push2his.eastmoney.com')) throw new Error('东财不应在腾讯 501 后优先被请求')
+    throw new Error(`unexpected url ${url}`)
+  }
+}
+
+test('refreshSnapshot 回退顺序：腾讯 501 → 新浪 JSON 成功（不请求东财），标注不复权', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'katestock-refresh-'))
+  try {
+    const calls = []
+    const universePath = join(dir, 'universe.json')
+    const outputPath = join(dir, 'latest.json')
+    writeFileSync(universePath, JSON.stringify(['600519']))
+    const result = await refreshSnapshot({
+      universePath,
+      outputPath,
+      fetcher: sinaAwareFetcher({ '600519': makeSinaRows(24) }, calls),
+      now: FIXTURE_NOW,
+      write: true,
+    })
+    assert.equal(result.tradeDate, TRADE_DATE)
+    assert.equal(result.valid, 1)
+    assert.equal(result.failed, 0)
+    // 腾讯重试 2 次后才切新浪；东财完全未被请求
+    assert.equal(calls.filter((url) => url.includes('web.ifzq.gtimg.cn')).length, 2)
+    assert.equal(calls.filter((url) => url.includes('quotes.sina.cn')).length, 1)
+    assert.ok(calls.findIndex((url) => url.includes('quotes.sina.cn')) > calls.findIndex((url) => url.includes('web.ifzq.gtimg.cn')))
+    assert.ok(!calls.some((url) => url.includes('push2his.eastmoney.com')))
+
+    const written = JSON.parse(readFileSync(outputPath, 'utf8'))
+    assert.equal(snapshotSchema.safeParse(written).success, true)
+    const quote = written.quotes['600519']
+    assert.equal(quote.provider, 'Sina kline (不复权)')
+    assert.equal(quote.adjustment, '不复权（tushare 未验证）')
+    assert.equal(quote.tradeDate, TRADE_DATE)
+    assert.equal(quote.volume, 1000)
+    assert.equal(written.sourceUrl, 'https://quotes.sina.cn/')
+    assert.match(written.source, /Sina kline \(不复权\)/)
+    assert.match(written.source, /不复权/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('fetchBarsForCode：腾讯/新浪/东财全失败时错误文案含三个源', async () => {
+  const parserFailingFetcher = async () => ({ ok: true, json: async () => ({}) })
+  const result = await fetchBarsForCode('600519', { fetcher: parserFailingFetcher })
+  assert.equal(result.bars, undefined)
+  assert.match(result.error, /腾讯失败/)
+  assert.match(result.error, /新浪失败/)
+  assert.match(result.error, /东财失败/)
 })

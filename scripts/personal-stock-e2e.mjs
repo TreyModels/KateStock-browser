@@ -3,7 +3,7 @@
  * 核心使用路径 E2E（Playwright）：添加非公开股票 → 东财失败 → JSONP → 腾讯日线回退 → 策略价位
  *
  * 目的：验证浏览器端「添加股票 600000（不在 public-universe.json）→ 点更新」能经
- *   东财 push2his（fetch 失败 / JSONP）→ 腾讯 fqkline 回退拿到 ≥21 根日线，并生成策略卡
+ *   东财 push2his（fetch 失败 / JSONP）→ 腾讯 fqkline（2026-11-24 起本机 501 WAF）→ 新浪 JSONP 回退拿到 ≥21 根日线，并生成策略卡
  *   （触发/保护/目标至少一个有值）。不改应用代码；任何时段可跑（日线不依赖盘中）。
  *
  * 用法：
@@ -41,7 +41,7 @@ const report = {
   base: BASE_URL,
   code: CODE,
   steps: [],
-  network: { push2his: [], tencentKline: [] },
+  network: { push2his: [], tencentKline: [], sinaKline: [] },
   consoleErrors: [],
   pageErrors: [],
   assertions: [],
@@ -109,6 +109,7 @@ async function main() {
     const entry = { url: url.slice(0, 300), error: request.failure()?.errorText ?? '' }
     if (url.includes('push2his.eastmoney.com')) report.network.push2his.push({ kind: 'requestfailed', ...entry })
     if (url.includes('web.ifzq.gtimg.cn')) report.network.tencentKline.push({ kind: 'requestfailed', ...entry })
+    if (url.includes('quotes.sina.cn')) report.network.sinaKline.push({ kind: 'requestfailed', ...entry })
   })
   page.on('response', async (response) => {
     const url = response.url()
@@ -128,9 +129,26 @@ async function main() {
           entry.lastDate = rows.at(-1)?.[0]
         }
       } catch {
-        /* 非 JSON 响应忽略 */
+        entry.bodySnippet = '（非 JSON：可能是 501 WAF 挑战页或 CORS 失败）'
       }
       report.network.tencentKline.push(entry)
+    }
+    if (url.includes('quotes.sina.cn')) {
+      const entry = { kind: 'response', status: response.status(), url: url.slice(0, 300) }
+      try {
+        const text = await response.text()
+        entry.bodySnippet = text.slice(0, 120)
+        const match = /var\s+__sina_kline_[^=]+=\s*\(([\s\S]*)\)\s*;?\s*$/.exec(text.trim())
+        if (match) {
+          const rows = JSON.parse(match[1])
+          entry.rows = Array.isArray(rows) ? rows.length : 0
+          entry.firstDate = rows?.[0]?.day
+          entry.lastDate = rows?.at?.(-1)?.day
+        }
+      } catch {
+        /* 忽略解析失败，仅记录状态 */
+      }
+      report.network.sinaKline.push(entry)
     }
   })
 
@@ -256,17 +274,27 @@ async function main() {
     assertion('策略卡有价格且至少一个价位', priceTokens.length >= 2, `价格型数值 ${priceTokens.length} 个：${priceTokens.join(' / ')}；${cardText.slice(0, 220)}`)
     await screenshot(page, 'personal-stock-04-today-card.png')
 
-    /* ── 8. Network 断言：东财失败 + 腾讯 kline 成功 ── */
+    /* ── 8. Network 断言：东财失败 + 腾讯 kline 或新浪 JSONP 成功 ── */
     const push2hisFailures = report.network.push2his.filter((entry) => entry.kind === 'requestfailed' || (entry.kind === 'response' && entry.status >= 400))
     const push2hisAttempts = report.network.push2his.filter((entry) => entry.kind === 'requestfailed' || entry.kind === 'response')
     const tencentSuccesses = report.network.tencentKline.filter((entry) => entry.kind === 'response' && entry.status === 200 && (entry.qfqdayRows ?? 0) >= 21)
+    const tencentAttempts = report.network.tencentKline.filter((entry) => entry.kind === 'requestfailed' || entry.kind === 'response')
+    const tencent501 = report.network.tencentKline.filter((entry) => entry.status === 501)
+    const sinaSuccesses = report.network.sinaKline.filter((entry) => entry.kind === 'response' && entry.status === 200 && (entry.rows ?? 0) >= 21)
     assertion('东财 push2his 有请求且失败（反爬/JSONP 失败）', push2hisAttempts.length > 0 && push2hisFailures.length > 0, `attempts=${push2hisAttempts.length}, failures=${push2hisFailures.length}`)
     assertion(
-      '腾讯 fqkline 回退成功（HTTP 200 且 qfqday≥21 根）',
-      tencentSuccesses.length > 0,
-      JSON.stringify(tencentSuccesses.slice(0, 2)),
+      '日线回退成功（腾讯 fqkline 或新浪 JSONP，任一成功）',
+      tencentSuccesses.length > 0 || sinaSuccesses.length > 0,
+      `腾讯成功=${tencentSuccesses.length}（501=${tencent501.length}，尝试=${tencentAttempts.length}）；新浪成功=${sinaSuccesses.length}；${JSON.stringify((tencentSuccesses[0] ?? sinaSuccesses[0]) ?? null)}`,
     )
-    assertion('quote 的 provider 标明腾讯日线回退', /Tencent/i.test(quote.provider ?? ''), quote.provider ?? 'null')
+    const provider = quote.provider ?? ''
+    assertion('quote 的 provider 标明回退数据源（腾讯/新浪）', /Tencent|Sina/i.test(provider), provider || 'null')
+    if (/Sina/i.test(provider)) {
+      assertion('新浪回退成功（HTTP 200 且 rows≥21 根）', sinaSuccesses.length > 0, JSON.stringify(sinaSuccesses.slice(0, 2)))
+      assertion('新浪回退为不复权并已明确标注（不冒充前复权）', /不复权/.test(quote.adjustment ?? ''), quote.adjustment ?? 'null')
+    } else {
+      assertion('腾讯 fqkline 回退成功（HTTP 200 且 qfqday≥21 根）', tencentSuccesses.length > 0, JSON.stringify(tencentSuccesses.slice(0, 2)))
+    }
     assertion('quote 的 bars 为 160 根（上限）', quote.bars === 160, `${quote.bars} 根（${quote.firstDate} → ${quote.lastDate}）`)
 
     /* ── 9. 无 pageerror ── */
@@ -299,7 +327,7 @@ async function main() {
 
 function writeReport() {
   const lines = []
-  lines.push('# 浏览器 E2E：添加非公开股票 → 腾讯日线回退 → 策略价位', '')
+  lines.push('# 浏览器 E2E：添加非公开股票 → 日线回退（腾讯/新浪）→ 策略价位', '')
   lines.push(`- 运行时间：${report.startedAt} → ${report.finishedAt ?? '—'}（Asia/Shanghai）`)
   lines.push(`- 页面：${report.base}；股票：${report.code}`)
   lines.push(`- 结论：**${report.conclusion}**${report.responsibility ? `；责任域（初步）：${report.responsibility}` : ''}`)
@@ -307,7 +335,7 @@ function writeReport() {
   lines.push('- dev server `http://localhost:3000` 运行中（本脚本不依赖交易时段，日线数据任何时段可拉）。')
   lines.push('- Playwright 装在 `/tmp`：`/tmp/pw-tools/node_modules/playwright` + `/tmp/pw-browsers`。')
   lines.push('- 浏览器上下文注入空个人清单；**除代码/名称外全部走页面交互**（打开添加对话框 → 填写 → 保存 → 点更新）。')
-  lines.push('- 本机出网 IP 被东财 push2his 反爬，这正是要验证「东财失败 → JSONP → 腾讯 kline」回退的场景。')
+  lines.push('- 本机出网 IP 被东财 push2his 反爬，这正是要验证「东财失败 → JSONP → 腾讯 kline → 新浪 JSONP」多级回退的场景；2026-11-24 07:44 起腾讯 fqkline 也对本机返回 501 WAF。')
   lines.push('', '## 步骤', '')
   for (const stepItem of report.steps) lines.push(`- ${stepItem.name}${stepItem.detail ? `：${stepItem.detail}` : ''}`)
   lines.push('', '## 断言', '')
@@ -316,8 +344,10 @@ function writeReport() {
   lines.push('', '## 网络证据', '')
   lines.push(`- push2his（东财）记录 ${report.network.push2his.length} 条：`)
   for (const entry of report.network.push2his.slice(0, 8)) lines.push(`  - ${JSON.stringify(entry)}`)
-  lines.push(`- 腾讯 fqkline 记录 ${report.network.tencentKline.length} 条：`)
+  lines.push(`- 腾讯 fqkline 记录 ${report.network.tencentKline.length} 条（501 为 WAF 挑战页，属数据源侧限制）：`)
   for (const entry of report.network.tencentKline.slice(0, 8)) lines.push(`  - ${JSON.stringify(entry)}`)
+  lines.push(`- 新浪 JSONP 记录 ${report.network.sinaKline.length} 条：`)
+  for (const entry of report.network.sinaKline.slice(0, 8)) lines.push(`  - ${JSON.stringify(entry)}`)
   lines.push('', '## 截图', '')
   for (const shot of report.screenshots) lines.push(`- \`${shot}\``)
   lines.push('', '## 复现命令', '', '```bash', 'cd kate-dashboard', 'PATH=/opt/homebrew/bin:$PATH \\', 'PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers \\', 'PLAYWRIGHT_MODULE=/tmp/pw-tools/node_modules/playwright \\', 'node scripts/personal-stock-e2e.mjs', '```', '')
@@ -329,7 +359,7 @@ function writeReport() {
   if (report.error) lines.push('## 失败堆栈', '', '```', report.error, '```', '')
   lines.push('## 责任域判定口径', '')
   lines.push('- 添加/保存/点更新/详情打不开 → **ui**（StockDialog / 按钮状态 / 详情弹窗）。')
-  lines.push('- 页面交互成功但 bars 未落地、provider 不是腾讯、或腾讯请求未发生 → **data**（market.ts 回退/解析）。')
+  lines.push('- 页面交互成功但 bars 未落地、provider 不是腾讯/新浪、或对应回退请求未发生 → **data**（market.ts 多级回退/解析）。')
   lines.push('- 网络里腾讯成功、localStorage 有 bars，但页面不显示策略卡/价位 → **ui 或状态管理**（本脚本会单独标注）。')
   writeFileSync(join(ROOT, 'docs', 'personal-stock-e2e.md'), lines.join('\n'))
 }

@@ -332,6 +332,171 @@ async function fetchTencentKlineQuote(code: string): Promise<Quote> {
   throw lastError instanceof Error ? lastError : new Error('腾讯日线请求失败，请检查网络或手动录入')
 }
 
+/* ─────────────────────────────────────────────────────────────
+ * 第四级回退：新浪日线 JSONP（腾讯 fqkline 返回 501 WAF 时的可用数据源）
+ *
+ * 实测（2026-11-24 07:3x，本机）：
+ *   - Node JSON：https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData
+ *       ?symbol=sh600519&scale=240&ma=no&datalen=320
+ *     → 200，`[{ "day","open","high","low","close","volume" }, ...]`；无 CORS 头（浏览器 fetch 不可用）。
+ *   - 浏览器 JSONP：https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20<name>=/CN_MarketDataService.getKLineData
+ *       ?symbol=sh600519&scale=240&ma=no&datalen=320
+ *     → 一段安全注释前缀（含 location 跳转）后跟 `var <name>=([...]);`，script 标签可执行、全局变量名可控。
+ *
+ * **复权口径实测（2026-11-24）**：新浪此接口是「不复权」原始价，不是前复权。
+ *   600519 重叠 320 根对比腾讯 qfq：2025-07-29 腾讯 1387.019 / 新浪 1439.000（比值 0.9639），
+ *   2026-03-16 腾讯 1432.156 / 新浪 1460.180（0.9808），2026-11-23 两者均 1439.000（比值 1），
+ *   差异随除权除息累积 → 新浪为不复权。故 provider='Sina kline (不复权)'、adjustment='不复权（tushare 未验证）'，
+ *   绝不冒充前复权。
+ *   另：新浪 volume 单位为「股」，统一换算为「手」（÷100 取整）以对齐东财/腾讯口径；amount 不提供置 0。
+ * ───────────────────────────────────────────────────────────── */
+
+const SINA_JSONP_ENDPOINT = 'https://quotes.sina.cn/cn/api/jsonp_v2.php'
+const SINA_DATALEN = 320
+/** 新浪 JSONP 单次超时（10s）。 */
+const SINA_JSONP_TIMEOUT_MS = 10_000
+const SINA_PROVIDER = 'Sina kline (不复权)'
+const SINA_ADJUSTMENT = '不复权（tushare 未验证）'
+
+function sinaSymbol(code: string): string {
+  return tencentKlineSymbol(code)
+}
+
+/** 新浪 JSONP 地址（变量名随机，避免并发覆盖全局）；导出便于调试/单测断言。 */
+export function sinaJsonpUrl(code: string, variableName: string): string {
+  return `${SINA_JSONP_ENDPOINT}/var%20${encodeURIComponent(variableName)}=/CN_MarketDataService.getKLineData?symbol=${sinaSymbol(code)}&scale=240&ma=no&datalen=${SINA_DATALEN}`
+}
+
+/**
+ * 解析新浪 JSONP 包裹文本，提取 `var <name>=(...);` 的数组（纯函数，用于离线测试/调试）。
+ * 浏览器路径不需要解析文本（script 执行后直接读全局变量），此函数用于验证包裹格式。
+ */
+export function extractSinaJsonpPayload(scriptText: string, variableName: string): unknown {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`var\\s+${escaped}\\s*=\\s*\\(([\\s\\S]*)\\)\\s*;?\\s*$`).exec(scriptText.trim())
+  if (!match) throw new Error('新浪 JSONP 包裹格式非法')
+  return JSON.parse(match[1])
+}
+
+/**
+ * 解析新浪日线数组 → Quote（纯函数，便于离线单测）。
+ *
+ * 输入：`[{ day, open, high, low, close, volume }, ...]`（按日期升序；volume 单位「股」）
+ * 校验：≥21 根、日期严格递增、最后一根 = 最新交易日（按北京时间工作日推算，允许滞后 1 个交易日）、取最后 160 根；
+ * value: amount=0、volume 换算成「手」、changePct 按前收（首根 0）。
+ */
+export function parseSinaKline(payload: unknown, code: string, now: Date = new Date()): Quote {
+  if (!Array.isArray(payload) || payload.length === 0) {
+    throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
+  }
+  const bars: Bar[] = []
+  for (const row of payload) {
+    if (!isRecord(row)) throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
+    const date = typeof row.day === 'string' ? row.day : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
+    const volumeShares = Number(row.volume)
+    const bar: Bar = {
+      date,
+      open: Number(row.open),
+      close: Number(row.close),
+      high: Number(row.high),
+      low: Number(row.low),
+      // 新浪 volume 单位是「股」，东财/腾讯是「手」；÷100 取整以保持 Quote.volume 口径一致
+      volume: Number.isFinite(volumeShares) && volumeShares >= 0 ? Math.round(volumeShares / 100) : NaN,
+      amount: 0,
+      changePct: 0,
+    }
+    if (![bar.open, bar.close, bar.high, bar.low].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
+    }
+    if (!Number.isFinite(bar.volume) || !Number.isFinite(bar.high) || bar.high < Math.max(bar.open, bar.close, bar.low)) {
+      throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
+    }
+    if (bar.low > Math.min(bar.open, bar.close)) throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
+    bars.push(bar)
+  }
+
+  if (bars.length < MIN_KLINE_BARS) {
+    throw new Error(`日线数据不足（仅 ${bars.length} 个交易日，至少需要 ${MIN_KLINE_BARS} 个），请改用手动行情`)
+  }
+  for (let index = 1; index < bars.length; index += 1) {
+    if (bars[index].date <= bars[index - 1].date) throw new Error('日线日期顺序异常，请稍后重试或改用手动行情')
+  }
+  for (let index = 1; index < bars.length; index += 1) {
+    const previousClose = bars[index - 1].close
+    bars[index].changePct = previousClose > 0 ? (bars[index].close / previousClose - 1) * 100 : 0
+  }
+
+  const latestTradingDate = latestTradingDateByCalendar(now)
+  const lastDate = bars[bars.length - 1].date
+  const acceptableDates = new Set([latestTradingDate, previousTradingDate(latestTradingDate)])
+  if (!acceptableDates.has(lastDate)) {
+    throw new Error(`日线数据不是最新交易日（最后 ${lastDate}，最新 ${latestTradingDate}），请稍后重试或改用手动行情`)
+  }
+
+  const kept = bars.slice(-MAX_KLINE_BARS)
+  const latest = kept[kept.length - 1]
+  const previous = kept[kept.length - 2]
+  return {
+    code,
+    price: latest.close,
+    prevClose: previous.close,
+    changePct: latest.changePct,
+    open: latest.open,
+    high: latest.high,
+    low: latest.low,
+    volume: latest.volume,
+    amount: latest.amount,
+    tradeDate: latest.date,
+    fetchedAt: now.toISOString(),
+    source: 'auto',
+    provider: SINA_PROVIDER,
+    adjustment: SINA_ADJUSTMENT,
+    bars: kept,
+  }
+}
+
+/** 新浪 JSONP script 注入：随机全局变量名 → onload 读值并清理 → 10s 超时。 */
+async function fetchSinaJsonpQuote(code: string): Promise<Quote> {
+  if (typeof document === 'undefined' || typeof window === 'undefined') {
+    throw new Error('新浪日线仅支持浏览器 script 注入')
+  }
+  const variableName = `__sina_kline_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  const globalScope = window as unknown as Record<string, unknown>
+  let loaded = false
+  try {
+    loaded = await new Promise<boolean>((resolve) => {
+      const script = document.createElement('script')
+      let settled = false
+      const finish = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        script.onload = null
+        script.onerror = null
+        script.remove()
+        resolve(ok)
+      }
+      const timer = setTimeout(() => finish(false), SINA_JSONP_TIMEOUT_MS)
+      script.src = sinaJsonpUrl(code, variableName)
+      script.async = true
+      script.onload = () => finish(true)
+      script.onerror = () => finish(false)
+      document.head.appendChild(script)
+    })
+    if (!loaded) throw new Error('新浪日线请求超时或加载失败')
+    return parseSinaKline(globalScope[variableName], code)
+  } finally {
+    // script 里的 `var <name>=...` 会在 window 上创建**不可配置**属性，严格模式下 delete 会抛 TypeError！
+    // 用 try/delete + 赋值兜底清掉引用（属性名随机且唯一，残留 undefined 属性无副作用）。
+    try {
+      delete globalScope[variableName]
+    } catch {
+      globalScope[variableName] = undefined
+    }
+  }
+}
+
 export async function fetchQuote(code: string): Promise<Quote> {
   if (!/^\d{6}$/.test(code)) throw new Error('请输入 6 位股票或 ETF 代码')
   let eastmoneyError: unknown
@@ -345,12 +510,17 @@ export async function fetchQuote(code: string): Promise<Quote> {
   } catch (error) {
     eastmoneyError = error
   }
-  // 第三级回退：腾讯日线（实测 CORS 全开；本机东财 push2his 被反爬时唯一可用链路）
+  // 第三级回退：腾讯日线（此前实测 CORS 全开；2026-11-24 07:44 起本机被 501 WAF 拦截）
   try {
     return await fetchTencentKlineQuote(code)
   } catch {
-    // 三级全失败：保留东财链路的原中文错误文案
-    throw eastmoneyError instanceof Error ? eastmoneyError : new Error('行情获取失败，请检查网络或手动录入')
+    // 第四级回退：新浪日线 JSONP（不复权，见上方实测注释）
+    try {
+      return await fetchSinaJsonpQuote(code)
+    } catch {
+      // 四级全失败：保留东财链路的原中文错误文案
+      throw eastmoneyError instanceof Error ? eastmoneyError : new Error('行情获取失败，请检查网络或手动录入')
+    }
   }
 }
 

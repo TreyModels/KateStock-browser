@@ -1,6 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchQuote, parseTencentKline, tencentKlineSymbol } from '../src/lib/market.ts'
+import {
+  extractSinaJsonpPayload,
+  fetchQuote,
+  parseSinaKline,
+  parseTencentKline,
+  sinaJsonpUrl,
+  tencentKlineSymbol,
+} from '../src/lib/market.ts'
 
 /* ─────────────────────────────────────────────────────────────
  * 离线 fixture：2026-11-24 实测腾讯日线接口
@@ -283,6 +290,160 @@ test('非法代码直接报中文错误（不进入任何网络回退）', async
     await assert.rejects(() => fetchQuote('60051'), /请输入 6 位股票或 ETF 代码/)
     await assert.rejects(() => fetchQuote('abcdef'), /请输入 6 位股票或 ETF 代码/)
     assert.equal(mock.calls.length, 0)
+  } finally {
+    mock.restore()
+  }
+})
+
+/* ─────────────────────────────────────────────────────────────
+ * 5) 新浪日线（第四级回退；腾讯 501 WAF 时的可用源）
+ *
+ * 真实响应（2026-11-24 08:0x 实测，quotes.sina.cn json_v2.php）最后 24 根；
+ * **不复权**：2025-07-29 新浪 1439.000 vs 腾讯 qfq 1387.019；2026-11-23 两者相等。
+ * volume 单位「股」（5697589 股 ≈ 56976 手）。
+ * ───────────────────────────────────────────────────────────── */
+const SINA_ROWS = [
+  { day: '2026-10-21', open: '1331.880', high: '1331.980', low: '1302.360', close: '1309.690', volume: '3351416' },
+  { day: '2026-10-22', open: '1303.210', high: '1322.000', low: '1296.000', close: '1318.490', volume: '4249133' },
+  { day: '2026-10-23', open: '1311.840', high: '1343.880', low: '1310.000', close: '1335.000', volume: '5768593' },
+  { day: '2026-10-26', open: '1325.400', high: '1350.000', low: '1324.790', close: '1349.980', volume: '4159916' },
+  { day: '2026-10-27', open: '1343.880', high: '1357.000', low: '1338.010', close: '1355.900', volume: '3866914' },
+  { day: '2026-10-28', open: '1354.980', high: '1354.980', low: '1322.600', close: '1330.750', volume: '3880493' },
+  { day: '2026-10-29', open: '1349.990', high: '1356.000', low: '1330.010', close: '1354.000', volume: '4299231' },
+  { day: '2026-10-30', open: '1363.000', high: '1393.370', low: '1352.980', close: '1392.050', volume: '5992729' },
+  { day: '2026-11-02', open: '1410.000', high: '1447.000', low: '1395.020', close: '1439.100', volume: '8269122' },
+  { day: '2026-11-03', open: '1450.000', high: '1480.000', low: '1435.100', close: '1480.000', volume: '7412056' },
+  { day: '2026-11-04', open: '1470.000', high: '1480.600', low: '1439.000', close: '1446.440', volume: '6543429' },
+  { day: '2026-11-05', open: '1446.700', high: '1466.000', low: '1430.000', close: '1452.000', volume: '4671220' },
+  { day: '2026-11-06', open: '1450.000', high: '1457.720', low: '1436.000', close: '1453.000', volume: '4284772' },
+  { day: '2026-11-09', open: '1440.060', high: '1449.990', low: '1435.080', close: '1444.990', volume: '2480122' },
+  { day: '2026-11-10', open: '1438.230', high: '1444.500', low: '1431.260', close: '1439.000', volume: '2303784' },
+  { day: '2026-11-11', open: '1445.000', high: '1445.620', low: '1402.000', close: '1402.300', volume: '3984791' },
+  { day: '2026-11-12', open: '1395.130', high: '1411.000', low: '1388.110', close: '1410.270', volume: '3237294' },
+  { day: '2026-11-13', open: '1404.000', high: '1437.690', low: '1394.000', close: '1435.260', volume: '4177984' },
+  { day: '2026-11-16', open: '1426.300', high: '1454.930', low: '1425.000', close: '1453.900', volume: '3996700' },
+  { day: '2026-11-17', open: '1458.880', high: '1461.600', low: '1437.710', close: '1457.700', volume: '3511645' },
+  { day: '2026-11-18', open: '1450.000', high: '1456.000', low: '1431.700', close: '1442.660', volume: '2984695' },
+  { day: '2026-11-19', open: '1442.000', high: '1464.990', low: '1432.100', close: '1460.210', volume: '4269153' },
+  { day: '2026-11-20', open: '1450.890', high: '1489.090', low: '1423.900', close: '1485.750', volume: '6722940' },
+  { day: '2026-11-23', open: '1475.350', high: '1478.000', low: '1428.000', close: '1439.000', volume: '5697589' },
+]
+
+test('新浪日线解析：字段映射、不复权标注、volume 股→手、amount=0', () => {
+  const quote = parseSinaKline(SINA_ROWS, '600519')
+  assert.equal(quote.code, '600519')
+  assert.equal(quote.provider, 'Sina kline (不复权)')
+  assert.equal(quote.adjustment, '不复权（tushare 未验证）')
+  assert.equal(quote.bars.length, SINA_ROWS.length)
+  assert.equal(quote.tradeDate, '2026-11-23')
+  assert.equal(quote.price, 1439.0)
+  assert.equal(quote.prevClose, 1485.75)
+  const latest = quote.bars.at(-1)
+  assert.equal(latest.open, 1475.35)
+  assert.equal(latest.high, 1478.0)
+  assert.equal(latest.low, 1428.0)
+  assert.equal(latest.amount, 0)
+  // 5697589 股 → 56976 手（÷100 取整）
+  assert.equal(latest.volume, 56976)
+  const expected = (1439.0 / 1485.75 - 1) * 100
+  assert.ok(Math.abs(latest.changePct - expected) < 1e-9)
+  assert.equal(quote.bars[0].changePct, 0)
+})
+
+test('新浪日线拒绝：不足 21 根 / 日期倒序', () => {
+  assert.throws(() => parseSinaKline(SINA_ROWS.slice(-20), '600519'), /日线数据不足/)
+  assert.throws(() => parseSinaKline([...SINA_ROWS].reverse(), '600519'), /日期顺序异常/)
+  assert.throws(() => parseSinaKline([], '600519'), /暂未返回有效日线/)
+  assert.throws(() => parseSinaKline(null, '600519'), /暂未返回有效日线/)
+})
+
+test('新浪 JSONP 包裹解析：var <name>=(...)（含注释前缀/尾分号）', () => {
+  const variable = '__sina_kline_test'
+  const text = `/*<script>location.href='//sina.com';</script>*/\nvar ${variable}=(${JSON.stringify(SINA_ROWS)});`
+  const payload = extractSinaJsonpPayload(text, variable)
+  assert.ok(Array.isArray(payload))
+  assert.equal(payload.length, SINA_ROWS.length)
+  assert.equal(payload.at(-1).day, '2026-11-23')
+  // 无尾分号也兼容
+  assert.equal(extractSinaJsonpPayload(`var ${variable}=(${JSON.stringify(SINA_ROWS)})`, variable).length, SINA_ROWS.length)
+  assert.throws(() => extractSinaJsonpPayload('var other=([1]);', variable), /包裹格式非法/)
+})
+
+test('新浪 JSONP URL：symbol/datalen/随机变量名', () => {
+  const url = sinaJsonpUrl('600519', '__sina_kline_abc')
+  assert.match(url, /jsonp_v2\.php\/var%20__sina_kline_abc=\/CN_MarketDataService\.getKLineData/)
+  assert.match(url, /symbol=sh600519/)
+  assert.match(url, /scale=240/)
+  assert.match(url, /ma=no/)
+  assert.match(url, /datalen=320/)
+  assert.match(sinaJsonpUrl('159915', 'k'), /symbol=sz159915/)
+})
+
+/** mock 浏览器 document/window：新浪 JSONP 成功（写入随机全局变量并触发 onload），东财 JSONP 失败。 */
+function mockBrowserForSina(payload) {
+  const originalDocument = globalThis.document
+  const originalWindow = globalThis.window
+  globalThis.window = globalThis
+  globalThis.document = {
+    head: {
+      appendChild(script) {
+        const src = String(script.src)
+        const match = /jsonp_v2\.php\/var%20([^=]+)=/.exec(src)
+        setTimeout(() => {
+          if (match) {
+            globalThis[decodeURIComponent(match[1])] = payload
+            script.onload?.()
+          } else {
+            script.onerror?.()
+          }
+        }, 0)
+      },
+    },
+    createElement() {
+      return { src: '', async: false, onload: null, onerror: null, remove() {} }
+    },
+  }
+  return {
+    restore() {
+      globalThis.document = originalDocument
+      globalThis.window = originalWindow
+    },
+  }
+}
+
+test('回退链：腾讯 501 → 新浪 JSONP 成功（第四级）', async () => {
+  const mock = mockFetch((url) => {
+    if (url.includes('push2his.eastmoney.com')) return { ok: false, status: 502 }
+    if (url.includes('web.ifzq.gtimg.cn')) return { ok: false, status: 501 }
+    throw new Error(`unexpected url ${url}`)
+  })
+  const browser = mockBrowserForSina(SINA_ROWS)
+  try {
+    const quote = await fetchQuote('600519')
+    assert.equal(quote.provider, 'Sina kline (不复权)')
+    assert.equal(quote.adjustment, '不复权（tushare 未验证）')
+    assert.equal(quote.tradeDate, '2026-11-23')
+    assert.equal(quote.price, 1439.0)
+    assert.equal(quote.bars.length, SINA_ROWS.length)
+    assert.equal(quote.volume, 56976)
+    // 东财 fetch 1 次 + 腾讯 2 次（1 次重试）；新浪走 script 注入不发 fetch
+    assert.equal(mock.calls.length, 3)
+    assert.match(mock.calls[1], /web\.ifzq\.gtimg\.cn/)
+    assert.match(mock.calls[2], /web\.ifzq\.gtimg\.cn/)
+  } finally {
+    mock.restore()
+    browser.restore()
+  }
+})
+
+test('回退链：四级全失败时抛错', async () => {
+  const mock = mockFetch((url) => {
+    if (url.includes('web.ifzq.gtimg.cn')) return { ok: false, status: 501 }
+    return { ok: false, status: 502 }
+  })
+  try {
+    // 无 document → 两个 JSONP 路径都不可用；fetch 全部失败
+    await assert.rejects(() => fetchQuote('600519'))
   } finally {
     mock.restore()
   }
