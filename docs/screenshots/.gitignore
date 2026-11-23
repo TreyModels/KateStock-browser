@@ -1,3 +1,6 @@
 # 可视化验收产物：本地证据，不入库（docs/visual-check.md 记录路径与结论）
 *.png
 measurements.json
+
+# 个人股票 E2E 证据（本地）
+personal-stock-evidence.json
