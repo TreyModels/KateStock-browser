@@ -178,6 +178,140 @@ function parseTencentQuotes(text) {
   return quotes
 }
 
+/* ───────────────────────── 告警链路实弹：候选选择（真实行情 × 快照价位） ───────────────────────── */
+
+const average = (values) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0)
+const round2 = (value) => Math.round(value * 100) / 100
+
+/** 与 strategy.ts 相同的 ATR14 计算（用于估算 costStop 的 stop 位）。 */
+function atr14Of(bars) {
+  if (!Array.isArray(bars) || bars.length < 2) return 0
+  const slice = bars.slice(-14)
+  const ranges = slice.map((bar, index) => {
+    const actualIndex = bars.length - slice.length + index
+    const previousClose = bars[actualIndex - 1]?.close ?? bar.open
+    return Math.max(bar.high - bar.low, Math.abs(bar.high - previousClose), Math.abs(bar.low - previousClose))
+  })
+  return average(ranges)
+}
+
+async function fetchGtimgQuotes(codes) {
+  const symbols = codes.map(tencentSymbol)
+  const text = await fetchBuffer(`https://qt.gtimg.cn/q=${symbols.join(',')}`, {
+    headers: { Referer: 'https://gu.qq.com/' },
+  }).then(decodeGbk)
+  return parseTencentQuotes(text)
+}
+
+/**
+ * 选一只「告警链路实弹」候选：
+ * - 用公开快照真实 bars 算 ma20/ATR14，用腾讯 gtimg 真实实时价作为「当前价」；
+ * - holding + cost = EOD close × 1.2 必然触发 generateStrategy 的 costStop 分支（action=stop）；
+ * - 该分支 stop = max(price×0.995, min(ma20, price+atr×0.2))，优先选 ma20>当前价 且 stop>当前价 的股票，
+ *   并选 stop/当前价 余量最大者（给轮询留价格波动空间）。
+ * 不伪造任何行情；注入的只是「持仓关系 + 成本价」。
+ */
+function computeAlertCandidates(snapshot, liveQuotes) {
+  const rows = []
+  for (const [code, quote] of Object.entries(snapshot?.quotes ?? {})) {
+    const bars = quote?.bars
+    if (!Array.isArray(bars) || bars.length < 21) continue
+    const closes = bars.map((bar) => bar.close)
+    const ma20 = average(closes.slice(-20))
+    const atr14 = atr14Of(bars)
+    const eodClose = Number.isFinite(quote.price) && quote.price > 0 ? quote.price : closes.at(-1)
+    const live = liveQuotes?.[code]
+    const livePrice = Number.isFinite(live?.price) && live.price > 0 ? live.price : eodClose
+    const stop = round2(Math.max(eodClose * 0.995, Math.min(ma20, eodClose + atr14 * 0.2)))
+    rows.push({
+      code,
+      eodClose: round2(eodClose),
+      livePrice: round2(livePrice),
+      liveTime: live?.timestampRaw ?? null,
+      ma20: round2(ma20),
+      atr14: round2(atr14),
+      stop,
+      marginPct: livePrice > 0 ? (stop / livePrice - 1) * 100 : -100,
+      ma20AboveLive: ma20 > livePrice,
+      ma20AboveEod: ma20 > eodClose,
+    })
+  }
+  rows.sort((a, b) => b.marginPct - a.marginPct)
+  const eligible = rows.filter((row) => row.code !== WATCH_CODE && row.code !== HOLDING_CODE)
+  let selected
+  let mode
+  selected = eligible.filter((row) => row.ma20AboveLive && row.stop > row.livePrice * 1.0005).sort((a, b) => b.marginPct - a.marginPct)[0]
+  mode = 'ma20 > 当前价（实时）且 stop > 当前价（余量最大）'
+  if (!selected) {
+    selected = eligible.filter((row) => row.ma20AboveEod && row.stop > row.livePrice * 0.999).sort((a, b) => b.marginPct - a.marginPct)[0]
+    mode = '回退：ma20 > EOD 收盘价 且 stop ≈> 当前价'
+  }
+  if (!selected) {
+    selected = eligible.filter((row) => row.stop > row.livePrice * 0.995).sort((a, b) => b.marginPct - a.marginPct)[0]
+    mode = '回退：stop 最接近当前价（不保证命中）'
+  }
+  return { rows, selected, mode, liveCount: Object.keys(liveQuotes ?? {}).length }
+}
+
+async function selectAlertCandidate(snapshot) {
+  const codes = Object.keys(snapshot?.quotes ?? {})
+  let liveQuotes = {}
+  let liveError
+  try {
+    liveQuotes = await fetchGtimgQuotes(codes)
+  } catch (error) {
+    liveError = error.message
+  }
+  const selection = computeAlertCandidates(snapshot, liveQuotes)
+  return { ...selection, liveError, candidateCodes: codes.length }
+}
+
+/** 等待提醒面板/ toast 出现「候选 code 的 stop 提醒」；返回证据。 */
+async function waitForAlertPipeline(page, code, timeoutMs = 30_000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const snapshot = await page.evaluate((targetCode) => {
+      const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+      const alerts = [...document.querySelectorAll('.alert-item')].map((el) => ({ cls: el.className, text: norm(el.innerText) }))
+      const hit = alerts.find((item) => /alert-stop/.test(item.cls) && item.text.includes(targetCode))
+      const toasts = [...document.querySelectorAll('[data-sonner-toast]')].map((el) => norm(el.innerText))
+      const toastHit = toasts.find((text) => text.includes(targetCode) && /保护|止损/.test(text))
+      return {
+        pass: Boolean(hit || toastHit),
+        evidence: hit?.text || toastHit || '',
+        status: norm(document.querySelector('.market-status')?.innerText).slice(0, 500),
+        panel: norm(document.querySelector('.live-alerts-panel')?.innerText).slice(0, 500),
+        phase: norm(document.querySelector('.phase-badge')?.textContent),
+        alerts,
+        toasts,
+      }
+    }, code)
+    if (snapshot.pass) return { ...snapshot, elapsedMs: Date.now() - startedAt }
+    await sleep(1000)
+  }
+  const last = await page.evaluate((targetCode) => {
+    const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const card = [...document.querySelectorAll('.strategy-card')]
+      .map((el) => ({
+        code: norm(el.querySelector('.code-label')?.textContent),
+        price: norm(el.querySelector('.live-price-number')?.textContent),
+        tag: norm(el.querySelector('.price-tag')?.textContent),
+        stop: norm([...el.querySelectorAll('.level-item')].find((item) => /保护/.test(item.textContent))?.querySelector('strong')?.textContent),
+        hit: norm(el.querySelector('.strategy-hit-banner')?.textContent) || null,
+      }))
+      .find((item) => item.code === targetCode)
+    return {
+      status: norm(document.querySelector('.market-status')?.innerText).slice(0, 500),
+      panel: norm(document.querySelector('.live-alerts-panel')?.innerText).slice(0, 500),
+      phase: norm(document.querySelector('.phase-badge')?.textContent),
+      card: card ?? null,
+      alerts: [...document.querySelectorAll('.alert-item')].map((el) => norm(el.innerText)),
+      toasts: [...document.querySelectorAll('[data-sonner-toast]')].map((el) => norm(el.innerText)),
+    }
+  }, code)
+  return { pass: false, evidence: JSON.stringify(last).slice(0, 600), lastEvidence: last, elapsedMs: Date.now() - startedAt }
+}
+
 /* ───────────────────────── 种子行情（真实数据，非 mock） ───────────────────────── */
 
 function quoteFromSnapshot(snapshot, code) {
@@ -315,6 +449,39 @@ async function nodeProbe() {
   process.exitCode = anyOk ? 0 : 1
 }
 
+/* ───────────────────────── --pick-candidate（诊断） ───────────────────────── */
+
+async function pickCandidateOnly() {
+  const now = new Date()
+  console.log('=== market-window --pick-candidate（诊断：不启浏览器） ===')
+  console.log(`北京时间: ${beijingDate(now)} ${beijingClock(now)}（${phaseNow(now)}）`)
+  const snapshot = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8'))
+  const selection = await selectAlertCandidate(snapshot)
+  console.log(
+    `实时报价（腾讯 gtimg）：${selection.liveCount}/${selection.candidateCodes} 只${selection.liveError ? `（失败：${selection.liveError}，将回退 EOD 价）` : ''}`,
+  )
+  console.log('候选（按 stop/实时价余量排序，前 10）：')
+  console.log('  code    EOD     实时      ma20     ATR14    stop     余量')
+  for (const row of selection.rows.slice(0, 10)) {
+    console.log(
+      `  ${row.code}  ${String(row.eodClose).padEnd(8)} ${String(row.livePrice).padEnd(8)} ${String(row.ma20).padEnd(8)} ${String(row.atr14).padEnd(8)} ${String(row.stop).padEnd(8)} ${row.marginPct.toFixed(2)}%`,
+    )
+  }
+  if (selection.selected) {
+    const picked = selection.selected
+    const cost = round2(picked.eodClose * 1.2)
+    console.log('')
+    console.log(`模式：${selection.mode}`)
+    console.log(`选中：${picked.code}（EOD=${picked.eodClose}，实时=${picked.livePrice}，ma20=${picked.ma20}，stop≈${picked.stop}，cost=${cost}，shares=100）`)
+    console.log(`预期：costStop → action=stop；stop=${picked.stop} > 实时价 ${picked.livePrice} ⇒ 下一轮报价应命中「跌破止损」。`)
+    console.log('注意：这是诊断输出，不写报告；实弹时主脚本会用同一选择函数并在页面里等待提醒。')
+    process.exitCode = 0
+  } else {
+    console.log('❌ 无候选：告警链路实弹将 FAIL（需要人工排查）。')
+    process.exitCode = 1
+  }
+}
+
 /* ───────────────────────── 主流程 ───────────────────────── */
 
 function loadPlaywright() {
@@ -390,7 +557,7 @@ function parseStatusClock(statusMeta) {
   return match?.[1]
 }
 
-function buildReport({ now, seedInfo, samples, providerTimes, consoleErrors, failedRequests, pageErrors, assertions, conclusion, exitCode, screenshots }) {
+function buildReport({ now, seedInfo, alertSelection, alertPipeline, naturalAlerts, samples, providerTimes, consoleErrors, failedRequests, pageErrors, assertions, conclusion, exitCode, screenshots }) {
   const lines = []
   lines.push('# 交易窗口实弹验收报告（market-window-check）', '')
   lines.push(`- 运行时间：${beijingDate(now)} ${beijingClock(now)}（北京时间）；相位：${phaseNow(now)}`)
@@ -400,10 +567,42 @@ function buildReport({ now, seedInfo, samples, providerTimes, consoleErrors, fai
   lines.push('## 种子行情（真实数据）', '')
   lines.push(`- ${WATCH_CODE}：${seedInfo.watch}`)
   lines.push(`- ${HOLDING_CODE}：${seedInfo.holding}`)
+  lines.push(`- 告警链路候选（脚本注入 holding）：${alertSelection?.selected ? `${alertSelection.selected.code}（cost=${alertSelection.cost}，shares=100）` : '无候选'}`)
   if (seedInfo.warnings.length) {
     lines.push('', '⚠️ 说明：')
     for (const warning of seedInfo.warnings) lines.push(`- ${warning}`)
   }
+
+  lines.push('', '## 告警链路实弹（真实行情 × 真实价位；持仓为脚本注入）', '')
+  lines.push(`- 候选逻辑：${alertSelection?.mode ?? '未执行'}；实时报价源：腾讯 gtimg ${alertSelection?.liveCount ?? 0}/${alertSelection?.candidateCodes ?? 0} 只${alertSelection?.liveError ? `（实时价获取失败：${alertSelection.liveError}，回退 EOD 价）` : ''}`)
+  if (alertSelection?.selected) {
+    lines.push('', '| code | EOD close | 实时价(gtimg) | ma20 | ATR14 | costStop 估计 stop | stop/实时价余量 |', '| --- | --- | --- | --- | --- | --- | --- |')
+    for (const row of (alertSelection.rows ?? []).slice(0, 8)) {
+      lines.push(`| ${row.code} | ${row.eodClose} | ${row.livePrice}${row.liveTime ? `（${row.liveTime}）` : ''} | ${row.ma20} | ${row.atr14} | ${row.stop} | ${row.marginPct.toFixed(2)}% |`)
+    }
+    const picked = alertSelection.selected
+    lines.push(
+      '',
+      `- 选中：**${picked.code}**（EOD=${picked.eodClose}，实时=${picked.livePrice}，ma20=${picked.ma20}，stop≈${picked.stop}，cost=${alertSelection.cost}，shares=100）`,
+      `- 触发条件：costStop（EOD close×1.2×0.93 > EOD close）→ action=stop；stop > 实时价 ⇒ 下一轮报价应命中「跌破止损」。`,
+      `- 等待结果：**${alertPipeline?.pass ? '✅ PASS' : '❌ FAIL'}**（${alertPipeline?.elapsedMs ?? '—'} ms）${alertPipeline?.pass ? `证据：${alertPipeline.evidence}` : ''}`,
+    )
+    if (!alertPipeline?.pass) {
+      lines.push(`  - FAIL 证据（状态条）：${alertPipeline?.lastEvidence?.status ?? alertPipeline?.evidence ?? '—'}`)
+      lines.push(`  - FAIL 证据（提醒面板）：${alertPipeline?.lastEvidence?.panel ?? '—'}`)
+      lines.push(`  - FAIL 证据（候选卡）：${JSON.stringify(alertPipeline?.lastEvidence?.card ?? null)}（价格若已高于 stop，说明是行情漂移而非管线 bug）`)
+    }
+  } else {
+    lines.push('- ❌ 未选出候选：无法进行告警链路实弹检查（按 FAIL 记录）。')
+  }
+
+  lines.push('', '## 自然触发（窗口内价格真的穿越策略价位）', '')
+  lines.push(
+    naturalAlerts.length
+      ? `- ✅ 出现自然提醒：${naturalAlerts.slice(0, 5).join(' / ')}`
+      : `- ⏳ 未出现自然提醒（PENDING；已排除脚本注入的 ${alertSelection?.selected?.code ?? '—'} stop 告警）`,
+  )
+
   lines.push('', '## 采样', '')
   lines.push('| # | 相对时刻 | 相位 | 状态条（最近报价/年龄/成功失败订阅） | 策略卡（代码:现价/触发/保护/目标） | 公开前3 | 提醒 | console网络错误 |')
   lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
@@ -506,6 +705,29 @@ async function main() {
     cost: holdingCost || undefined,
     createdAt: new Date().toISOString(),
   })
+
+  // ── 告警链路实弹（二级检查）：真实实时价 × 快照 bars 选一只 ma20>当前价 的 holding，
+  //    cost 设为 EOD close×1.2 → 必然进入 costStop 分支（action=stop，stop 位在现价上方）。
+  //    只注入「持仓关系/成本价」，行情仍是真实快照 bars + 真实实时报价，不伪造价格。 ──
+  const alertSelection = await selectAlertCandidate(snapshot)
+  const alertCandidate = alertSelection.selected
+  if (alertCandidate) {
+    const candidateQuote = quoteFromSnapshot(snapshot, alertCandidate.code)
+    if (candidateQuote) quotes[alertCandidate.code] = candidateQuote
+    alertSelection.cost = round2(alertCandidate.eodClose * 1.2)
+    stocks.push({
+      id: `seed-alert-${alertCandidate.code}`,
+      code: alertCandidate.code,
+      name: `实弹告警-${alertCandidate.code}`,
+      status: 'holding',
+      shares: 100,
+      cost: alertSelection.cost,
+      createdAt: new Date().toISOString(),
+    })
+  } else {
+    seedWarnings.push('告警链路实弹：没有找到可用候选（ma20>当前价 / 回退均失败），二级检查将 FAIL。')
+  }
+
   const seed = { stocks, quotes, settings: { capital: 200000, riskPct: 0.8, maxPositionPct: 12, refreshOnOpen: true } }
 
   const storageKey = 'ashare-daily-strategy-v1'
@@ -567,6 +789,15 @@ async function main() {
   log(`交易窗口确认：${beijingDate(now)} ${beijingClock(now)}（${phaseNow(now)}）；打开 ${BASE_URL}`)
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
   await ready()
+  // 关键：首轮加载可能已触发候选告警并写入「已见集合」；reload 后 React 面板会清空，
+  // 若不清掉 localStorage 去重键，告警链路检查会误判 FAIL。这里只清提醒去重键，不动个人清单/行情。
+  await page.evaluate(() => {
+    try {
+      localStorage.removeItem('kate-dashboard:alerts:seen:v1')
+    } catch {
+      /* ignore */
+    }
+  })
   // Lead 要求 reload 一次，让策略卡在快照合并后生成价位
   await page.reload({ waitUntil: 'domcontentloaded' })
   await ready()
@@ -574,6 +805,27 @@ async function main() {
 
   const samples = []
   const screenshots = []
+
+  // ── 告警链路实弹：reload 后等一个轮询周期，检查候选 code 的 stop 提醒是否出现 ──
+  let alertPipeline = { pass: false, evidence: '未执行（无候选）', elapsedMs: null, screenshot: null }
+  if (alertCandidate) {
+    log(
+      `等待告警链路实弹：候选=${alertCandidate.code} EOD=${alertCandidate.eodClose} 实时=${alertCandidate.livePrice} ma20=${alertCandidate.ma20} stop=${alertCandidate.stop} cost=${alertSelection.cost}（${alertSelection.mode}）`,
+    )
+    alertPipeline = await waitForAlertPipeline(page, alertCandidate.code, 30_000)
+    try {
+      const shot = 'docs/screenshots/market-window-alert-pipeline.png'
+      await page.locator('.live-alerts-panel').screenshot({ path: join(ROOT, shot) })
+      alertPipeline.screenshot = shot
+      screenshots.push(shot)
+    } catch (error) {
+      log(`告警链路截图失败（不影响判定）：${error.message}`)
+    }
+    log(`告警链路实弹：${alertPipeline.pass ? 'PASS' : 'FAIL'}（${alertPipeline.elapsedMs}ms）证据：${alertPipeline.evidence}`)
+  } else {
+    log('告警链路实弹：无候选，跳过（将按 FAIL 记录）')
+  }
+
   const startedAt = Date.now()
   for (let index = 0; index < SESSION_SAMPLES_MS.length; index += 1) {
     const target = SESSION_SAMPLES_MS[index]
@@ -649,32 +901,48 @@ async function main() {
   const phasePass = phases.every((phase) => phase === '交易中' || phase === '集合竞价')
   assertions.push({ name: '相位=交易中/竞价', pass: phasePass, detail: `采样相位=${phases.join(' / ')}` })
 
-  const alertsSeen = samples.some((sample) => sample.data.alerts.length > 0 || sample.data.toasts.length > 0)
+  const isInjectedAlert = (text) => Boolean(alertCandidate) && text.includes(alertCandidate.code) && /保护|止损|stop/i.test(text)
+  const allAlertTexts = samples.flatMap((sample) => [...sample.data.alerts, ...sample.data.toasts])
+  const naturalAlerts = allAlertTexts.filter((text) => !isInjectedAlert(text))
+  const alertsSeen = naturalAlerts.length > 0
   assertions.push({ name: '无 pageerror', pass: pageErrors.length === 0, detail: pageErrors.length ? pageErrors.join(' | ') : '0 条' })
   assertions.push({
-    name: '提醒（出现=PASS；未出现=PENDING）',
+    name: '告警链路实弹（真实行情×真实价位；持仓为脚本注入）',
+    pass: Boolean(alertPipeline.pass),
+    detail: alertPipeline.pass
+      ? `PASS：${alertPipeline.evidence}（${alertPipeline.elapsedMs}ms）`
+      : `FAIL：${alertPipeline.evidence}`,
+  })
+  assertions.push({
+    name: '自然触发（出现=PASS；未出现=PENDING）',
     pass: alertsSeen ? true : null,
     detail: alertsSeen
-      ? `窗口内自然触发：${samples.flatMap((s) => [...s.data.alerts, ...s.data.toasts]).slice(0, 3).join(' / ')}`
-      : '窗口内未自然触发（按约定记为 PENDING，不判失败）',
+      ? `窗口内自然触发：${naturalAlerts.slice(0, 3).join(' / ')}`
+      : `窗口内未自然触发（按约定记为 PENDING，不判失败；已排除脚本注入的 ${alertCandidate?.code ?? '—'} stop 告警）`,
   })
 
   const hardPass = assertions.every((assertion) => assertion.pass !== false)
   const exitCode = hardPass ? (alertsSeen ? 0 : 3) : 1
   const conclusion = hardPass
     ? alertsSeen
-      ? 'PASS：真实行情在更新、相位/时间戳正确，且窗口内自然触发了提醒'
-      : 'PENDING：真实行情在更新、相位/时间戳正确，但窗口内未自然触发提醒（按约定不判失败）'
-    : 'FAIL：硬断言未通过'
+      ? 'PASS：真实行情在更新、相位/时间戳正确；告警链路实弹 PASS，且窗口内自然触发了提醒'
+      : 'PENDING：真实行情在更新、相位/时间戳正确、告警链路实弹 PASS；但窗口内未自然触发提醒（按约定不判失败）'
+    : 'FAIL：硬断言或告警链路实弹未通过'
 
   const seedInfo = {
     watch: watchSnapshotQuote ? '公开快照 bars（真实，tradeDate=' + watchSnapshotQuote.tradeDate + '）' : '快照无 bars（降级）',
     holding: holdingSource,
     warnings: seedWarnings,
   }
+  if (!alertPipeline.lastEvidence) {
+    alertPipeline.lastEvidence = { status: '', panel: '' }
+  }
   buildReport({
     now,
     seedInfo,
+    alertSelection,
+    alertPipeline,
+    naturalAlerts,
     samples,
     providerTimes,
     consoleErrors,
@@ -687,7 +955,7 @@ async function main() {
   })
   writeFileSync(
     SAMPLES_PATH,
-    JSON.stringify({ now: now.toISOString(), seedInfo, samples, providerTimes, assertions, consoleErrors, failedRequests, pageErrors, exitCode }, null, 2),
+    JSON.stringify({ now: now.toISOString(), seedInfo, alertSelection, alertPipeline, naturalAlerts, samples, providerTimes, assertions, consoleErrors, failedRequests, pageErrors, exitCode }, null, 2),
   )
 
   if (interactive) log('')
@@ -701,11 +969,19 @@ async function main() {
 
 const args = new Set(process.argv.slice(2))
 if (args.has('--help') || args.has('-h')) {
-  console.log('用法：node scripts/market-window-check.mjs [--node-probe]')
-  console.log('退出码：0=PASS 1=FAIL 2=非交易时段 3=PENDING（硬断言通过但未自然触发提醒）')
+  console.log('用法：node scripts/market-window-check.mjs [--node-probe | --pick-candidate]')
+  console.log('  无参数：交易窗口内实弹（硬断言 + 告警链路实弹 + 自然触发）')
+  console.log('  --node-probe：只探测腾讯/东财数据源时间戳（任何时段可跑）')
+  console.log('  --pick-candidate：只计算并打印告警链路候选（真实 gtimg 价 × 快照 bars，不启浏览器）')
+  console.log('退出码：0=PASS 1=FAIL 2=非交易时段 3=PENDING（硬断言+告警链路通过，但未自然触发提醒）')
   process.exit(0)
 }
-if (args.has('--node-probe')) {
+if (args.has('--pick-candidate')) {
+  pickCandidateOnly().catch((error) => {
+    console.error('pick-candidate 失败：', error)
+    process.exit(1)
+  })
+} else if (args.has('--node-probe')) {
   nodeProbe().catch((error) => {
     console.error('probe 失败：', error)
     process.exit(1)
