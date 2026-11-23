@@ -1,0 +1,3 @@
+# 可视化验收产物：本地证据，不入库（docs/visual-check.md 记录路径与结论）
+*.png
+measurements.json

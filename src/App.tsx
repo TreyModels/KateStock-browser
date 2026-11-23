@@ -443,7 +443,6 @@ function App() {
                 })}
               </div>
               {!filteredStocks.length && <div className="empty-state"><Search size={28} /><h3>没有匹配的股票</h3><p>更换关键词或清单筛选。</p></div>}
-              <button className="button-primary mobile-fab" onClick={openAdd}><Plus size={18} />添加股票</button>
             </section>
           )}
 
