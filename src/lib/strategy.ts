@@ -135,6 +135,9 @@ export function generateStrategy(stock: Stock, quote: Quote, settings: RiskSetti
     score,
     summary,
     reasons,
+    // 是否持仓（status==='holding' 且 shares>0）；盘中提醒据此区分持仓/非持仓语义。
+    // 只透传既有推导结果，不影响 EOD 价位算法与回测语义。
+    isHolding,
     trigger,
     stop,
     target,

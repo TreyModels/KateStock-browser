@@ -15,12 +15,20 @@ import { ResearchSettings } from '@/components/ResearchSettings'
 import { QuantsLibrary } from '@/components/QuantsLibrary'
 import { BacktestLab } from '@/components/BacktestLab'
 import { StockDialog } from '@/components/StockDialog'
-import { StrategyCard, formatPrice } from '@/components/StrategyCard'
+import { StrategyCard } from '@/components/StrategyCard'
 import { StrategyDetailDialog } from '@/components/StrategyDetailDialog'
+import { LiveAlertsPanel } from '@/components/live/LiveAlertsPanel'
+import { LivePrice } from '@/components/live/LivePrice'
+import { MarketStatusBar } from '@/components/live/MarketStatusBar'
+import { isLivePricePhase } from '@/components/live/quote-utils'
+import { useLiveAlerts } from '@/hooks/useLiveAlerts'
+import { useLiveQuotes } from '@/hooks/useLiveQuotes'
 import { useLocalData } from '@/hooks/useLocalData'
+import { getMarketPhase } from '@/lib/live'
+import { isHoldingStrategy } from '@/lib/live-signals'
 import { fetchQuotes } from '@/lib/market'
 import { generateStrategy } from '@/lib/strategy'
-import type { Quote, Stock, StockStatus } from '@/types'
+import type { MarketPhase, Quote, Stock, StockStatus } from '@/types'
 import './App.css'
 
 type View = 'today' | 'stocks' | 'backtest' | 'rules' | 'settings' | 'library'
@@ -37,6 +45,8 @@ const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = 
 
 const statusLabels: Record<StockStatus, string> = { history: '历史记录', holding: '当前持仓', watch: '当前自选' }
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+/** 盘中订阅上限：单次批量请求最多 80 只（Lead 裁定 N-5）。 */
+const MAX_LIVE_CODES = 80
 
 function App() {
   const { data, setData, resetData } = useLocalData()
@@ -68,6 +78,58 @@ function App() {
   const riskCount = strategies.filter((item) => item.action === 'reduce' || item.action === 'stop').length
   const holdingCount = data.stocks.filter((stock) => stock.status === 'holding').length
   const dateText = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
+
+  /* ── 盘中层接线：报价代码优先取个人清单，没有清单时取公开快照的代码 ── */
+  const [liveAutoRefresh, setLiveAutoRefresh] = useState(true)
+  const [manualLiveRefresh, setManualLiveRefresh] = useState(false)
+  // 只在本机时钟真正跨越交易时段时更新相位，避免每 15 秒重渲染整页（P2-4）。
+  const [phase, setPhase] = useState<MarketPhase>(() => getMarketPhase())
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const next = getMarketPhase()
+      setPhase((current) => (current === next ? current : next))
+    }, 15_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  // 订阅集合取并集：个人清单 ∪ 公开快照（N-5，公开代码本就公开，仍是一次批量请求）。
+  const liveCodes = useMemo(() => {
+    const personalCodes = data.stocks.map((stock) => stock.code)
+    const publicCodes = report ? Object.keys(report.quotes) : []
+    const merged = [...new Set([...personalCodes, ...publicCodes].filter((code) => /^\d{6}$/.test(code)))]
+    return merged.slice(0, MAX_LIVE_CODES)
+  }, [data.stocks, report])
+
+  const { liveQuotes, updatedAt: liveUpdatedAt, lastAttemptAt: liveLastAttemptAt, loading: liveLoading, errors: liveErrors, refresh: refreshLive } = useLiveQuotes(liveCodes, { enabled: liveAutoRefresh || manualLiveRefresh })
+  const { alerts, dismiss, clear, permission, requestPermission, soundEnabled, toggleSound } = useLiveAlerts(strategies, liveQuotes)
+
+  // 最近报价时间只取 provider 的行情时间（P1-7）：优先 hook 的 updatedAt（本批成功报价的最新 provider 时间），
+  // 本轮全部失败时回落到已展示报价里的最新 provider 时间；两者都不是抓取时间，无报价时显示「—」。
+  const latestLiveQuoteAt = useMemo(() => Object.values(liveQuotes).reduce<string | undefined>(
+    (latest, quote) => (!latest || quote.updatedAt > latest ? quote.updatedAt : latest), undefined), [liveQuotes])
+  const recentQuoteAt = liveUpdatedAt ?? latestLiveQuoteAt
+  // 本轮刷新成功/失败：失败但仍有旧报价的代码，价格旁标注「上次报价」而不是「盘中」（P1-1）。
+  // 持仓语义与 evaluateLive 同源：优先 Strategy.isHolding，旧数据回退 action 推断。
+  const holdingByCode = useMemo(() => Object.fromEntries(
+    strategies.map((strategy) => [strategy.code, isHoldingStrategy(strategy)])), [strategies])
+  const liveFailedCodes = useMemo(() => Object.keys(liveErrors).filter((code) => liveCodes.includes(code)), [liveErrors, liveCodes])
+  const liveSuccessCount = useMemo(() => liveCodes.filter((code) => liveQuotes[code] && !liveErrors[code]).length, [liveCodes, liveQuotes, liveErrors])
+  const liveRetainedCount = liveFailedCodes.filter((code) => liveQuotes[code]).length
+
+  // 自动刷新关闭时，「刷新」按一次性拉取处理：短暂开启订阅，拉取结束立即回到关闭状态。
+  useEffect(() => {
+    if (!manualLiveRefresh || liveLoading) return
+    const timer = window.setTimeout(() => setManualLiveRefresh(false), 0)
+    return () => window.clearTimeout(timer)
+  }, [manualLiveRefresh, liveLoading])
+
+  const requestLiveRefresh = () => {
+    if (liveAutoRefresh) {
+      void refreshLive()
+      return
+    }
+    setManualLiveRefresh(true)
+  }
 
   async function refreshCodes(codes?: string[]) {
     const targetCodes = (codes ?? data.stocks.map((stock) => stock.code)).filter(code => /^(600|601|603|605|000|001|002|510|511|512|513|515|516|518|588|159)\d{3}$/.test(code))
@@ -238,9 +300,22 @@ function App() {
         <main className="page-content">
           {view === 'today' && (
             <>
+              <MarketStatusBar
+                phase={phase}
+                updatedAt={recentQuoteAt}
+                lastAttemptAt={liveLastAttemptAt}
+                loading={liveLoading}
+                failedCodes={liveFailedCodes}
+                successCount={liveSuccessCount}
+                retainedCount={liveRetainedCount}
+                covered={liveCodes.length}
+                autoRefresh={liveAutoRefresh}
+                onToggleAutoRefresh={() => setLiveAutoRefresh((value) => !value)}
+                onRefresh={requestLiveRefresh}
+              />
               {data.goldValueCny !== undefined && <section className="report-status"><strong>黄金产品 · 手动参考价值</strong><p>¥{money.format(data.goldValueCny)} · 非实时；未确认产品代码</p></section>}
               <ReportStatus report={report} loading={reportLoading} cached={reportCached} error={reportError} onRetry={() => void loadReport()} />
-              <PublicStocks report={report} stocks={data.stocks} onImport={() => setView('settings')} />
+              <PublicStocks report={report} stocks={data.stocks} onImport={() => setView('settings')} liveQuotes={liveQuotes} liveErrors={liveErrors} phase={phase} />
               <ResearchSettings />
               <section className="briefing-panel">
                 <div className="briefing-copy">
@@ -249,7 +324,7 @@ function App() {
                   <p>短线积极模式 · 日线信号 · 条件单思维</p>
                   <button className="briefing-button" onClick={() => void refreshCodes()} disabled={refreshing}>
                     <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
-                    {refreshing ? `更新中 ${progress[0]}/${progress[1]}` : '刷新今日策略'}
+                    {refreshing ? `更新中 ${progress[0]}/${progress[1]}` : '更新日线策略'}
                   </button>
                 </div>
                 <div className="briefing-stats">
@@ -264,7 +339,7 @@ function App() {
                 <section>
                   <div className="section-heading">
                     <div><span className="section-kicker">TODAY'S SIGNALS</span><h2>今日优先清单</h2></div>
-                    <span className="data-stamp">{refreshing ? <LoaderCircle size={15} className="spin" /> : <Database size={15} />}{strategies.length ? '策略已计算' : '等待行情'}</span>
+                    <span className="data-stamp">{liveLoading ? <LoaderCircle size={15} className="spin" /> : isLivePricePhase(phase) && liveSuccessCount ? <Activity size={15} /> : <Database size={15} />}{isLivePricePhase(phase) && liveSuccessCount ? `盘中 ${liveSuccessCount} 只${liveFailedCodes.length ? ` · 未刷新 ${liveFailedCodes.length}` : ''}` : strategies.length ? '策略已计算' : '等待行情'}</span>
                   </div>
                   <div className="filter-tabs" role="tablist" aria-label="策略信号筛选">
                     {([['all', '全部'], ['buy', '机会'], ['risk', '风险'], ['wait', '等待']] as Array<[SignalFilter, string]>).map(([id, label]) => (
@@ -274,7 +349,7 @@ function App() {
 
                   {filteredStrategies.length ? (
                     <div className="strategy-list">
-                      {filteredStrategies.map((strategy) => <StrategyCard key={strategy.stockId} strategy={strategy} onOpen={() => setSelectedCode(strategy.code)} />)}
+                      {filteredStrategies.map((strategy) => <StrategyCard key={strategy.stockId} strategy={strategy} liveQuote={liveQuotes[strategy.code]} liveError={liveErrors[strategy.code]} phase={phase} onOpen={() => setSelectedCode(strategy.code)} />)}
                     </div>
                   ) : (
                     <div className="empty-state">
@@ -287,6 +362,7 @@ function App() {
                 </section>
 
                 <aside className="right-rail">
+                  <LiveAlertsPanel alerts={alerts} dismiss={dismiss} clear={clear} permission={permission} requestPermission={requestPermission} soundEnabled={soundEnabled} toggleSound={toggleSound} phase={phase} strategyCount={strategies.length} holdingByCode={holdingByCode} />
                   <section className="discipline-panel">
                     <div className="section-heading compact"><div><span className="section-kicker">RISK FIRST</span><h2>盘前纪律</h2></div><ShieldCheck size={21} /></div>
                     <ul className="rule-list">
@@ -302,7 +378,7 @@ function App() {
                     <div className="flex justify-between text-xs text-muted-foreground"><span>账户 ¥{data.settings.capital.toLocaleString('zh-CN')}</span><span>单票上限 {data.settings.maxPositionPct}%</span></div>
                     <button className="text-button" onClick={() => setView('settings')}>调整风险参数 <ArrowUpRight size={14} /></button>
                   </section>
-                  <p className="source-note">行情来自公开日线接口，可能延迟或中断。策略仅为规则化研究参考，不构成收益承诺。</p>
+                  <p className="source-note">盘中报价来自公开行情接口，可能延迟或中断；收盘后显示收盘价。策略与提醒仅为规则化研究参考，不构成投资建议。</p>
                 </aside>
               </div>
             </>
@@ -314,6 +390,20 @@ function App() {
                 <div><span className="section-kicker">MY UNIVERSE</span><h1>我的股票</h1><p>持仓、自选与历史记录分开管理。</p></div>
                 <button className="button-primary desktop-action" onClick={openAdd}><Plus size={17} />添加股票</button>
               </div>
+              <MarketStatusBar
+                phase={phase}
+                updatedAt={recentQuoteAt}
+                lastAttemptAt={liveLastAttemptAt}
+                loading={liveLoading}
+                failedCodes={liveFailedCodes}
+                successCount={liveSuccessCount}
+                retainedCount={liveRetainedCount}
+                covered={liveCodes.length}
+                autoRefresh={liveAutoRefresh}
+                onToggleAutoRefresh={() => setLiveAutoRefresh((value) => !value)}
+                onRefresh={requestLiveRefresh}
+                compact
+              />
               <div className="stock-toolbar">
                 <label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或代码" aria-label="搜索股票" /></label>
                 <select value={stockFilter} onChange={(event) => setStockFilter(event.target.value as 'all' | StockStatus)} aria-label="筛选清单类型">
@@ -321,10 +411,14 @@ function App() {
                 </select>
                 <button className="button-secondary" onClick={() => void refreshCodes()} disabled={refreshing}><RefreshCw size={16} className={refreshing ? 'spin' : ''} />更新</button>
               </div>
-              <div className="list-caption"><span>{filteredStocks.length} 条记录</span><span>个人记录仅保存在当前设备</span></div>
+              <div className="list-caption"><span>{filteredStocks.length} 条记录 · {isLivePricePhase(phase) ? `盘中订阅 ${liveCodes.length} 只 · 成功 ${liveSuccessCount} / 失败 ${liveFailedCodes.length}` : '非交易时段：显示收盘或上次报价'}</span><span>个人记录仅保存在当前设备</span></div>
               <div className="stock-list">
                 {filteredStocks.map((stock) => {
                   const quote = data.quotes[stock.code]
+                  const liveQuote = liveQuotes[stock.code]
+                  const liveError = liveErrors[stock.code]
+                  const displayPrice = liveQuote?.price ?? quote?.price
+                  const displayChangePct = liveQuote?.changePct ?? quote?.changePct
                   return (
                     <article className="stock-row" key={stock.id}>
                       <button className="stock-identity" onClick={() => openEdit(stock)}>
@@ -332,7 +426,9 @@ function App() {
                         <span className={`status-tag status-${stock.status}`}>{statusLabels[stock.status]}</span>
                       </button>
                       <div className="stock-quote">
-                        {quote ? <><strong className="number-text">{formatPrice(quote.price)}</strong><span className={quote.changePct >= 0 ? 'market-up' : 'market-down'}>{quote.changePct >= 0 ? '+' : ''}{quote.changePct.toFixed(2)}%</span></> : <span className="text-muted-foreground">等待行情</span>}
+                        {displayPrice !== undefined && displayChangePct !== undefined
+                          ? <LivePrice value={displayPrice} changePct={displayChangePct} phase={phase} live={Boolean(liveQuote)} stale={Boolean(liveError)} quoteAt={liveQuote?.updatedAt} size="row" />
+                          : <span className="text-muted-foreground">等待行情</span>}
                       </div>
                       <div className="stock-pnl">
                         <span>2026 收益额</span><strong className={`number-text ${(stock.annualPnl ?? 0) >= 0 ? 'market-up' : 'market-down'}`}>{stock.annualPnl === undefined ? '—' : `${stock.annualPnl >= 0 ? '+' : '−'}${money.format(Math.abs(stock.annualPnl))}`}</strong>
@@ -379,7 +475,7 @@ function App() {
                     <label className="form-field">单笔风险（%）<input type="number" min="0.2" max="2" step="0.1" value={data.settings.riskPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, riskPct: Math.min(2, Math.max(0.2, Number(event.target.value))) } }))} /></label>
                     <label className="form-field">单票仓位上限（%）<input type="number" min="1" max="50" step="1" value={data.settings.maxPositionPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, maxPositionPct: Math.min(50, Math.max(1, Number(event.target.value))) } }))} /></label>
                   </div>
-                  <p className="settings-note">打开应用时读取已发布的公共快照；如需个股最新行情，请手动刷新。</p>
+                  <p className="settings-note">打开应用时读取已发布的公共快照；交易时段会按公开接口轮询盘中报价，收盘后显示收盘价。自动刷新可在今日页状态条关闭。</p>
                 </section>
                 <section>
                   <div className="settings-section-title"><Smartphone size={19} /><h2>在 iPhone / iPad 上使用</h2></div>
@@ -412,7 +508,7 @@ function App() {
       </div>
 
       <StockDialog open={stockDialogOpen} onOpenChange={setStockDialogOpen} stock={editingStock} quote={editingStock ? data.quotes[editingStock.code] : undefined} onSave={saveStock} />
-      <StrategyDetailDialog strategy={selectedStrategy} open={Boolean(selectedCode)} onOpenChange={(open) => !open && setSelectedCode(undefined)} />
+      <StrategyDetailDialog strategy={selectedStrategy} open={Boolean(selectedCode)} onOpenChange={(open) => !open && setSelectedCode(undefined)} liveQuote={selectedCode ? liveQuotes[selectedCode] : undefined} liveFailed={selectedCode ? Boolean(liveErrors[selectedCode]) : false} phase={phase} />
       <AlertDialog open={Boolean(deleteStock)} onOpenChange={(open) => !open && setDeleteStock(undefined)}>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>移除{deleteStock?.name}？</AlertDialogTitle><AlertDialogDescription>该股票及其本地行情缓存会被移除，此操作可通过备份恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground">确认移除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>

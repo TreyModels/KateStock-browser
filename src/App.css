@@ -404,8 +404,9 @@
 .public-stock strong { overflow-wrap: anywhere; font-size: 14px; }
 .public-stock small { color: #66776d; }
 .public-stock-price { text-align: right; font-variant-numeric: tabular-nums; }
-.public-stock-price span { font-size: 12px; font-weight: 600; }
+.public-stock-price .live-price-compact .live-price-number { font-size: 14px; }
 .public-stock-warning { color: #9a4c08; margin: 14px 0 0; font-size: 13px; }
+.public-stocks-stale-note { margin: 10px 0 0; color: #9a4c08; font-size: 12px; line-height: 1.65; }
 @media (min-width: 700px) { .public-stocks-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (min-width: 1100px) { .public-stocks-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 390px) { .public-stocks { padding: 16px; } .public-stock { padding: 9px; } }
@@ -416,3 +417,122 @@
 .public-stock-signal span { color: #63756a; font-size: 12px; }
 .public-stock-signal p { margin: 4px 0; color: #4d6054; font-size: 12px; line-height: 1.5; }
 .public-stock-signal summary { min-height: 34px; padding-top: 6px; color: #315e42; font-size: 12px; cursor: pointer; }
+
+/* ─────────────────────────────────────────────────────────────
+ * 盘中层：状态条 / 实时价格 / 命中态 / 提醒面板
+ * 移动端优先，宽屏在已有断点内自然扩展。
+ * ───────────────────────────────────────────────────────────── */
+
+/* 盘中状态条 */
+.market-status { display: grid; gap: 10px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid oklch(var(--border)); border-radius: 16px; background: oklch(var(--card)); }
+.market-status-compact { margin-bottom: 14px; padding: 12px 14px; }
+.market-status-main { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.market-status-phase { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.market-status-note { color: oklch(var(--muted-foreground)); font-size: 12px; line-height: 1.5; }
+.market-status-stale { color: #9a4c08; }
+.market-status-compact .market-status-note { display: none; }
+.market-status-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; color: oklch(var(--muted-foreground)); font-size: 12px; }
+.market-status-meta b { color: oklch(var(--foreground)); font-family: "Avenir Next", "DIN Alternate", "PingFang SC", sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; }
+.market-status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.market-status-foot { display: flex; align-items: flex-start; gap: 5px; margin: 0; color: oklch(var(--muted-foreground)); font-size: 11px; line-height: 1.7; }
+.market-status-foot svg { flex-shrink: 0; margin-top: 3px; }
+.market-status-error { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: #9a4c08; font-size: 12px; line-height: 1.6; }
+.market-status-error svg { flex-shrink: 0; margin-top: 2px; }
+.phase-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 2px 10px; border-radius: 999px; background: oklch(var(--secondary)); color: oklch(var(--muted-foreground)); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.phase-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.phase-trading { background: oklch(var(--red-100)); color: #a82d27; }
+.phase-trading .phase-dot { animation: live-pulse 1.8s ease-in-out infinite; }
+.phase-auction { background: #f4ead7; color: #825b16; }
+.phase-auction .phase-dot { animation: live-pulse 1.8s ease-in-out infinite; }
+.phase-preopen, .phase-lunch { background: oklch(var(--secondary)); color: oklch(var(--muted-foreground)); }
+.phase-closed, .phase-non-trading { background: oklch(var(--ink-900)); color: oklch(var(--paper-50)); }
+@keyframes live-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .3; transform: scale(.78); } }
+
+.live-switch { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; padding: 0 4px; color: oklch(var(--muted-foreground)); font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.live-switch span { white-space: nowrap; }
+.live-refresh { min-height: 44px; padding: 0 12px; font-size: 13px; }
+
+/* 价格 + 时段标记 + 变化高亮 */
+.live-price { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; }
+.live-price-number { padding: 0 2px; border-radius: 6px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.live-price-change { font-size: 13px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.live-price-card .live-price-number { font-size: 22px; }
+.live-price-row { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.live-price-row .live-price-number { font-size: 18px; }
+.live-price-compact { display: grid; justify-items: end; gap: 1px; }
+.live-price-compact .live-price-number { font-size: 15px; font-weight: 650; }
+.live-price-compact .live-price-change { font-size: 12px; }
+.live-price-detail .live-price-number { font-size: 30px; }
+.price-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; background: oklch(var(--secondary)); color: oklch(var(--muted-foreground)); font-size: 10px; font-weight: 550; line-height: 1.7; white-space: nowrap; }
+.price-tag-live { background: oklch(var(--red-100)); color: #a82d27; }
+.price-tag-stale { background: #f4ead7; color: #825b16; }
+.price-tag-live::before { width: 5px; height: 5px; border-radius: 50%; background: #c93f36; content: ""; animation: live-pulse 1.8s ease-in-out infinite; }
+.price-flash-up { animation: price-flash-up 900ms ease-out; }
+.price-flash-down { animation: price-flash-down 900ms ease-out; }
+@keyframes price-flash-up { 0% { background-color: #f6d0cb; } 100% { background-color: transparent; } }
+@keyframes price-flash-down { 0% { background-color: #cde8dc; } 100% { background-color: transparent; } }
+
+/* 策略卡命中态 */
+.strategy-card-hit-trigger { border-color: #c93f36; }
+.strategy-card-hit-stop { border-color: #087553; }
+.strategy-card-hit-target { border-color: #355581; }
+.strategy-hit-banner { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding: 7px 10px; border-radius: 9px; font-size: 12px; font-weight: 600; }
+.strategy-hit-trigger { background: oklch(var(--red-100)); color: #a82d27; }
+.strategy-hit-stop { background: oklch(var(--green-100)); color: #086446; }
+.strategy-hit-target { background: #e7edf9; color: #355581; }
+.level-item { min-width: 0; }
+.level-distance { display: block; margin-top: 2px; color: oklch(var(--muted-foreground)); font-size: 10px; line-height: 1.5; }
+.level-hit { border-radius: 8px; }
+.level-hit-trigger { background: oklch(var(--red-100) / .55); }
+.level-hit-stop { background: oklch(var(--green-100) / .6); }
+.level-hit-target { background: #e7edf9; }
+.level-box-hit { border: 1px solid oklch(var(--border)); background: oklch(var(--red-100) / .35); }
+.level-box-distance { display: block; margin-top: 2px; color: oklch(var(--muted-foreground)); font-size: 10px; line-height: 1.5; }
+
+/* 盘中提醒面板 */
+.live-alerts-panel { padding: 20px; border: 1px solid oklch(var(--border)); border-radius: 17px; background: oklch(var(--card)); }
+.live-alerts-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.live-alerts-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 19px; letter-spacing: -.02em; }
+.live-alerts-heading svg { flex-shrink: 0; color: oklch(var(--primary)); }
+.alert-count { display: inline-grid; min-width: 22px; height: 22px; place-items: center; padding: 0 6px; border-radius: 999px; background: oklch(var(--primary)); color: oklch(var(--primary-foreground)); font-family: "Avenir Next", sans-serif; font-size: 11px; font-weight: 700; }
+.live-alerts-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.alert-permission { min-height: 44px; padding: 0 12px; font-size: 12px; }
+.live-alerts-hint { margin: 0 0 12px; color: #9a4c08; font-size: 11px; line-height: 1.6; }
+.live-alerts-empty { display: flex; gap: 10px; padding: 14px; border: 1px dashed oklch(var(--border)); border-radius: 12px; color: oklch(var(--muted-foreground)); }
+.live-alerts-empty svg { flex-shrink: 0; margin-top: 2px; }
+.live-alerts-empty p { margin: 0; font-size: 12px; line-height: 1.7; }
+.alert-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.alert-item { display: flex; align-items: flex-start; gap: 8px; padding: 10px 8px 10px 12px; border: 1px solid oklch(var(--border)); border-left-width: 3px; border-left-style: solid; border-radius: 11px; background: oklch(var(--background)); }
+.alert-trigger { border-left-color: #c93f36; }
+.alert-stop { border-left-color: #087553; }
+.alert-target { border-left-color: #355581; }
+.alert-item-main { display: grid; flex: 1; gap: 4px; min-width: 0; }
+.alert-item-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.alert-kind { padding: 1px 7px; border-radius: 5px; font-size: 10px; font-weight: 650; }
+.alert-holding { padding: 1px 6px; border-radius: 5px; background: #e7edf9; color: #355581; font-size: 10px; font-weight: 650; }
+.alert-trigger .alert-kind { background: oklch(var(--red-100)); color: #a82d27; }
+.alert-stop .alert-kind { background: oklch(var(--green-100)); color: #086446; }
+.alert-target .alert-kind { background: #e7edf9; color: #355581; }
+.alert-item-top strong { font-size: 14px; }
+.alert-item-top time { margin-left: auto; color: oklch(var(--muted-foreground)); font-size: 11px; font-variant-numeric: tabular-nums; }
+.alert-item-message { margin: 0; font-size: 12px; line-height: 1.6; }
+.alert-item-levels { display: flex; flex-wrap: wrap; gap: 2px 14px; color: oklch(var(--muted-foreground)); font-size: 11px; }
+.alert-item-levels b { color: oklch(var(--foreground)); font-family: "Avenir Next", "PingFang SC", sans-serif; font-weight: 600; }
+.alert-dismiss { flex-shrink: 0; width: 40px; height: 44px; }
+.alert-clear { margin-top: 8px; }
+.live-alerts-foot { margin: 14px 0 0; color: oklch(var(--muted-foreground)); font-size: 11px; line-height: 1.7; }
+
+.live-switch-control { width: 44px; height: 26px; }
+.live-switch-control [data-slot="switch-thumb"] { width: 20px; height: 20px; }
+.live-switch-control[data-state="checked"] [data-slot="switch-thumb"] { transform: translateX(22px); }
+
+@media (min-width: 640px) {
+  .market-status { padding: 16px 20px; }
+  .market-status-actions { margin-left: auto; }
+}
+
+@media (max-width: 380px) {
+  .live-price-card .live-price-number { font-size: 20px; }
+  .market-status { padding: 12px; }
+  .live-alerts-panel { padding: 16px; }
+}
