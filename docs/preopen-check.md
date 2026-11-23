@@ -1,6 +1,6 @@
 # 盘前态真实时钟检查（不冒充实时、不误报）
 
-- 运行时间：2026-11-24 07:28:55（Asia/Shanghai，真实时钟，无固定时钟/mock）
+- 运行时间：2026-11-24 07:29:33（Asia/Shanghai，真实时钟，无固定时钟/mock）
 - 页面：http://localhost:3000（独立 browser context，未注入清单/mock）
 - 结论：**PASS**
 

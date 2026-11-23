@@ -1,6 +1,6 @@
 # 浏览器 E2E：添加非公开股票 → 腾讯日线回退 → 策略价位
 
-- 运行时间：2026-11-23T23:28:51.588Z → 2026-11-23T23:28:55.189Z（Asia/Shanghai）
+- 运行时间：2026-11-23T23:29:29.817Z → 2026-11-23T23:29:33.036Z（Asia/Shanghai）
 - 页面：http://localhost:3000；股票：600000
 - 结论：**PASS**
 
@@ -38,9 +38,9 @@
 
 - push2his（东财）记录 4 条：
   - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260328&end=20500101","error":"net::ERR_EMPTY_RESPONSE"}
-  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260328&end=20500101&cb=__quote_1795476533778_o64pb7qt6df","error":"net::ERR_EMPTY_RESPONSE"}
+  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260328&end=20500101&cb=__quote_1795476571647_1yw41s08s96","error":"net::ERR_EMPTY_RESPONSE"}
   - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260328&end=20500101","error":"net::ERR_EMPTY_RESPONSE"}
-  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260328&end=20500101&cb=__quote_1795476534240_3dhfhtf6z34","error":"net::ERR_EMPTY_RESPONSE"}
+  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260328&end=20500101&cb=__quote_1795476572093_55squfma2kf","error":"net::ERR_EMPTY_RESPONSE"}
 - 腾讯 fqkline 记录 2 条：
   - {"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":320,"firstDate":"2025-07-29","lastDate":"2026-11-23"}
   - {"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":320,"firstDate":"2025-07-29","lastDate":"2026-11-23"}
