@@ -1,18 +1,18 @@
 # 发布候选（RC）状态
 
-- 版本：`3fdf1d1` — Add one-command acceptance runner and RC status tooling
-- 生成时间：2026-11-24 07:29:19（Asia/Shanghai）；相位：preopen
-- 环境：macOS，Node v26.12.0，dev server http://localhost:3000（可达），公开快照：存在（701293 bytes）
+- 版本：`353185c` — Add Node snapshot refresher (no Python/akshare/Actions needed)
+- 生成时间：2026-11-24 07:33:35（Asia/Shanghai）；相位：preopen
+- 环境：macOS，Node v26.12.0，dev server http://localhost:3000（可达），公开快照：存在（630792 bytes）
 - 工作区：0 个未提交文件（验收脚本/文档/日志；**src/ 应用代码零改动**）
 - 一键复跑：`bash scripts/acceptance-all.sh`（退出码 0=无 FAIL；1=有 FAIL）
-- 本次日志：`docs/acceptance-logs/20261124-072918/`（已 gitignore）
+- 本次日志：`docs/acceptance-logs/20261124-073335/`（已 gitignore）
 - 本次 market-window: SKIP（非交易时段，当前相位=preopen）
 
 ## 本次结果
 
 | 检查 | 结果 | 证据 | 说明 |
 | --- | --- | --- | --- |
-| verify.sh | PASS | scripts/verify.sh（build/lint/node tests；日志 docs/acceptance-logs/20261124-072918/verify.sh.log） | exit 0 |
+| verify.sh | PASS | scripts/verify.sh（build/lint/node tests；日志 docs/acceptance-logs/20261124-073335/verify.sh.log） | exit 0 |
 | check_baseline | PASS | tests/acceptance/check_baseline.mjs | exit 0 |
 | python-unittest | PASS | tests/（python3 -m unittest discover -s tests） | exit 0 |
 | personal-stock-e2e | PASS | docs/personal-stock-e2e.md、docs/screenshots/personal-stock-*.png | exit 0 |
@@ -21,20 +21,20 @@
 
 汇总：PASS=5，FAIL=0，SKIP=1，PENDING=0。
 
-## 真实输出（每步 tail；完整日志见 `docs/acceptance-logs/20261124-072918/`）
+## 真实输出（每步 tail；完整日志见 `docs/acceptance-logs/20261124-073335/`）
 
 ### verify.sh（PASS）
 ```
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 713.637
+ℹ duration_ms 4283.41475
 --> PASS: node tests
 
 ════════════════════════ 汇总 ════════════════════════
   PASS  build
   PASS  lint
   PASS  node tests
-  日志：/var/folders/jb/km5070j9141659tyckdk886r0000gn/T//katestock-verify-20261124-072919.log
+  日志：/var/folders/jb/km5070j9141659tyckdk886r0000gn/T//katestock-verify-20261124-073336.log
 ══════════════════════════════════════════════════════
 结果：PASS（build + lint + node tests 全部通过）
 ```
@@ -82,7 +82,7 @@ OK
 
 ### preopen-check（PASS）
 ```
-真实时钟盘前检查：2026-11-24 07:29:33（Asia/Shanghai）
+真实时钟盘前检查：2026-11-24 07:33:53（Asia/Shanghai）
 ✅ 相位徽标 = 盘前：phase="盘前"；状态条="最近报价 16:15:00 数据年龄 15 小时前 成功 29 / 失败 0 / 订阅 29"
 ✅ provider 时间 = 上一交易日约 16:14（不是今天 09:xx）：000960 20261123161500 → 2026-11-23 16:15:00（来源 tencent field30；expectedDate=2026-11-23；today=2026-11-24）
 ✅ 状态条「最近报价」= provider 时间（±2 分钟）：statusClock=16:15:00 vs provider=16:15:00
