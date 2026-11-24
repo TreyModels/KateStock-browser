@@ -42,6 +42,7 @@ FAIL_COUNT=0
 PENDING_COUNT=0
 SKIP_COUNT=0
 PASS_COUNT=0
+MARKET_RESULT="SKIP"
 
 record_row() {
   # $1 step, $2 status, $3 evidence, $4 reason
@@ -198,21 +199,25 @@ else
   case "${MARKET_EXIT}" in
     0)
       PASS_COUNT=$((PASS_COUNT + 1))
+      MARKET_RESULT="PASS"
       record_row "market-window" "PASS" "docs/market-window-report.md" "exit 0"
       append_tail "market-window" "${MARKET_LOG}" "PASS"
       echo "→ PASS"
       ;;
     3)
       PENDING_COUNT=$((PENDING_COUNT + 1))
+      MARKET_RESULT="PENDING"
       record_row "market-window" "PENDING（待盘中）" "docs/market-window-report.md" "exit 3：硬断言+告警链路通过，窗口内未自然触发提醒（按约定不判失败）"
       append_tail "market-window" "${MARKET_LOG}" "PENDING（待盘中）"
       echo "→ PENDING（待盘中，不算失败）"
       ;;
     2)
+      MARKET_RESULT="SKIP"
       skip_step "market-window" "docs/market-window-report.md" "脚本判定非交易时段（exit 2）"
       ;;
     *)
       FAIL_COUNT=$((FAIL_COUNT + 1))
+      MARKET_RESULT="FAIL"
       record_row "market-window" "**FAIL**" "docs/market-window-report.md" "exit ${MARKET_EXIT}（见 docs/acceptance-logs/${STAMP}/market-window.log）"
       append_tail "market-window" "${MARKET_LOG}" "FAIL exit ${MARKET_EXIT}"
       echo "→ FAIL（exit ${MARKET_EXIT}）"
@@ -236,8 +241,12 @@ fi
 RC_DOC="${ROOT}/docs/rc-status.md"
 if [ "${FAIL_COUNT}" -gt 0 ]; then
   RC_CONCLUSION="**不通过（有 FAIL）**：不可作为发布候选；请修复后重跑 \`bash scripts/acceptance-all.sh\`。"
+elif [ "${MARKET_RESULT}" = "PASS" ]; then
+  RC_CONCLUSION="**自动化通过 + 真实盘中实弹 PASS（发布候选 RC）**：本次交易窗口 market-window 实跑 exit 0（硬断言 PASS、告警链路实弹 PASS、自然触发 PASS）。可作为发布候选；移动端真机、生产 Service Worker、通知/声音仍待人工。"
+elif [ "${MARKET_RESULT}" = "PENDING" ]; then
+  RC_CONCLUSION="**自动化通过 + 盘中实弹 PENDING（待盘中复测）**：硬断言与告警链路 PASS，但窗口内未自然触发提醒（按约定不判失败）；移动端真机/生产 SW 仍待人工。"
 else
-  RC_CONCLUSION="**自动化通过（发布候选 RC）**：可作为发布候选交用户做收盘后/真机走查。真实盘中实弹、移动端真机、生产 Service Worker 仍待人工，见「已知未验证项」。"
+  RC_CONCLUSION="**自动化通过（盘中实弹本次 SKIP）**：可作为发布候选；真实盘中实弹需在 09:15–11:30 / 13:00–15:00 重跑，移动端真机/生产 SW 仍待人工。"
 fi
 MARKET_LINE="本次 market-window:"
 if [ "${IS_TRADING}" = "1" ]; then
@@ -291,7 +300,13 @@ fi
   echo ""
   echo "## 已知未验证项（人工/盘中/部署）"
   echo ""
-  echo "1. **真实盘中实弹**：盘中价格更新、告警链路、通知/声音，需交易时段跑 \`node scripts/market-window-check.mjs\`（09:35 计划）；本次 $([ "${IS_TRADING}" = "1" ] && echo '已尝试' || echo '因非交易时段 SKIP')。"
+  case "${MARKET_RESULT}" in
+    PASS) MARKET_NOTE="本次已在交易窗口实跑 **PASS**（硬断言+告警链路+自然触发均通过，详见 docs/market-window-report.md）" ;;
+    PENDING) MARKET_NOTE="本次已实跑 **PENDING**（硬断言+告警链路 PASS，窗口内未自然触发提醒，按约定不判失败）" ;;
+    FAIL) MARKET_NOTE="本次实跑 **FAIL**（见 docs/market-window-report.md）" ;;
+    *) MARKET_NOTE="本次因非交易时段 SKIP" ;;
+  esac
+  echo "1. **真实盘中实弹**：盘中价格更新、告警链路、通知/声音（通知/声音未在本脚本断言）；${MARKET_NOTE}。"
   echo "2. **移动端真机**：iOS Safari 安全区/触控/通知权限；headless 视口截图见 \`docs/visual-check.md\`（E5 PASS*，遗留 P2 触控/FAB 已由后续提交修复，仍建议真机确认）。"
   echo "3. **生产 Service Worker / GitHub Pages**：\`data/latest.json\` 缓存、旧快照回退提示、通知权限；本地 dev server 不注册 SW，需部署后验证（P1-8）。"
   echo "4. **集合竞价 09:15–09:25**：腾讯时间戳行为未经实测（P1-3）。"
