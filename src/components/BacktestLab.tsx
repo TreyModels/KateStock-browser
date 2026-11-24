@@ -108,17 +108,17 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
   const [playing, setPlaying] = useState(false)
   const stock = stocks.find((item) => item.code === selectedCode)
   const bars = useMemo(() => quotes[selectedCode]?.bars ?? [], [quotes, selectedCode])
-  const results = useMemo(() => runAllBacktests(bars), [bars])
+  const results = useMemo(() => runAllBacktests(bars, { code: selectedCode }), [bars, selectedCode])
   const selected = results.find((result) => result.id === selectedId) ?? results[0]
   const best = [...results].sort((a, b) => b.score - a.score)[0]
   const stockResults = useMemo(() => stocks.map((item) => {
     const history = quotes[item.code]?.bars ?? []
     if (history.length < 100) return { item, history, result: undefined, validation: undefined }
     const split = Math.floor(history.length * 0.7)
-    const training = runAllBacktests(history.slice(0, split)).filter((r) => r.trades.length >= 3)
+    const training = runAllBacktests(history.slice(0, split), { code: item.code }).filter((r) => r.trades.length >= 3)
       .sort((a, b) => b.totalReturnPct - a.totalReturnPct)
     const chosen = training[0]
-    const validation = chosen ? runAllBacktests(history.slice(split - 20)).find((r) => r.id === chosen.id) : undefined
+    const validation = chosen ? runAllBacktests(history.slice(split - 20), { code: item.code }).find((r) => r.id === chosen.id) : undefined
     return { item, history, result: chosen, validation }
   }), [stocks, quotes])
 
@@ -177,7 +177,7 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
           <thead><tr><th>股票</th><th>历史优选</th><th>验证收益</th><th>最大回撤</th><th>交易</th><th>最新条件</th></tr></thead>
           <tbody>{stockResults.map(({ item, history, result, validation }) => {
             const valid = validation && validation.trades.length >= 3
-            const latest = result && history.length ? runAllBacktests(history).find((r) => r.id === result.id) : undefined
+            const latest = result && history.length ? runAllBacktests(history, { code: item.code }).find((r) => r.id === result.id) : undefined
             return <tr key={item.id} onClick={() => { if (history.length >= 45) { setSelectedCode(item.code); if (result) setSelectedId(result.id) } }} style={{ cursor: 'pointer' }}>
               <td>{item.name} · {item.code}</td><td>{result?.name ?? '样本不足'}</td>
               <td>{valid ? percent(validation.totalReturnPct) : '证据不足'}</td><td>{valid ? percent(validation.maxDrawdownPct) : '—'}</td>
@@ -195,7 +195,7 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
 
       <section className="performance-panel" style={{ marginBottom: 24 }}>
         <h2>quants.md adaptations / 策略改编</h2>
-        <p>Single-stock adaptations, next-open fills and 0.1% per side. Original portfolio sizing differs. / 单只股票改编，次日开盘成交，单边成本 0.1%；仓位与原版不同。</p>
+        <p>Single-stock adaptations, next-open fills. / 单只股票改编，次日开盘成交。成本：佣金万2.5、每笔最低 5 元（双向）+ 卖出印花税 0.05%；100 股整手；仓位与原版不同。</p>
         {bars.length < 60 ? <p>At least 60 daily bars required. / 至少需要 60 根日线。</p> : quantsBacktests(bars).map(r => <div key={r.id} style={{ padding: '12px 0', borderBottom: '1px solid #ddd' }}><strong>{r.id} {r.name}</strong><p>{r.signal} · Return / 收益 {percent(r.ret)} · Drawdown / 回撤 {percent(r.drawdown)} · Trades / 交易 {r.trades}</p><p>{r.trades < 3 ? 'Too few completed trades to assess. / 完成交易过少，无法评估。' : `Win rate / 胜率 ${(r.wins / r.trades * 100).toFixed(0)}%`}</p></div>)}
       </section>
       <section className="match-hero">
@@ -238,7 +238,12 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
               <div><span>盈利因子</span><strong>{selected.profitFactor === null ? '∞' : selected.profitFactor.toFixed(2)}</strong></div>
             </div>
             <EquityChart result={selected} bars={bars} />
-            <details className="assumptions"><summary>回测假设与限制</summary><p>收盘生成信号，下一交易日开盘执行；单边成本 0.10%。止损与目标在同一交易日均触及时，保守地按止损优先。单策略归一化满仓，仅用于比较规则；不含分红、涨跌停无法成交、流动性和实际滑点差异。</p></details>
+            {(selected.unfilledEntries > 0 || selected.slippageWaits > 0) && (
+              <p className="backtest-limits">
+                本次回测：{selected.unfilledEntries} 次涨停未能买入、{selected.slippageWaits} 次跌停延迟卖出。
+              </p>
+            )}
+            <details className="assumptions"><summary>回测假设与限制</summary><p>收盘生成信号，下一交易日开盘执行；佣金万2.5、每笔最低 5 元（双向）+ 卖出印花税 0.05%；100 股整手。已按日线近似建模涨停买不到（顺延一次后放弃）与跌停卖不掉（延迟卖出）；止损/目标按跳空后实际可成交价；数据为复权价，涨跌停用前收近似；不含分红、盘中滑点/冲击成本。止损与目标在同一交易日均触及时，保守地按止损优先。</p></details>
           </div>
 
           <section className="storyboard">
