@@ -677,3 +677,10 @@ html.theme-switching *::after {
 }
 /* 回测未成交/延迟卖出提示 */
 .backtest-limits { margin: 8px 0 4px; padding: 8px 10px; border-radius: 9px; background: oklch(var(--secondary)); color: oklch(var(--muted-foreground)); font-size: 12px; line-height: 1.6; }
+
+/* 语言切换（分段按钮，44px 触控） */
+.lang-toggle { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid oklch(var(--border)); border-radius: 12px; background: oklch(var(--card)); }
+.lang-toggle button { min-width: 44px; min-height: 44px; padding: 0 10px; border-radius: 9px; color: oklch(var(--muted-foreground)); font-size: 13px; font-weight: 600; }
+.lang-toggle button.active { background: oklch(var(--primary)); color: oklch(var(--primary-foreground)); }
+.sidebar-lang { margin: 12px 8px; }
+.settings-lang { margin-top: 14px; }

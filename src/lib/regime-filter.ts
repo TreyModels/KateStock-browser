@@ -47,6 +47,9 @@ export interface RegimeVerdict {
   dontToday: string[]
 }
 
+/** 语言字面量类型（不 import i18n.ts，避免循环依赖；默认 zh 保证向后兼容）。 */
+export type RegimeLang = 'zh' | 'en'
+
 export const REGIME_PROFILES: Record<MarketRegime, RegimeProfile> = {
   bear: {
     regime: 'bear',
@@ -97,6 +100,57 @@ export const REGIME_PROFILES: Record<MarketRegime, RegimeProfile> = {
   },
 }
 
+/** 三档配置的英文版（lang='en' 时由 profileFor 返回）。 */
+export const REGIME_PROFILES_EN: Record<MarketRegime, RegimeProfile> = {
+  bear: {
+    regime: 'bear',
+    maxEquityPct: 30,
+    baselineEquityPct: 20,
+    cashPct: 70,
+    maxPerNamePct: 6,
+    maxPositions: 2,
+    allowBreakout: false,
+    allowPullback: false,
+    sizeMultiplier: 0,
+    notes: [
+      'Bear market: stop-loss / trim only, no new positions',
+      'Cash ≥70%, single name ≤6%, at most 2 concurrent positions',
+      'Wait for MA60 to turn up and breadth to repair before buying',
+    ],
+  },
+  range: {
+    regime: 'range',
+    maxEquityPct: 60,
+    baselineEquityPct: 45,
+    cashPct: 40,
+    maxPerNamePct: 8,
+    maxPositions: 4,
+    allowBreakout: true,
+    allowPullback: true,
+    sizeMultiplier: 0.5,
+    notes: [
+      'Range market: half-size pullbacks only, breakouts downgraded',
+      'Cash 30–50%, single name ≤8%, at most 4 concurrent positions',
+      'Require pullback confirmation; do not chase',
+    ],
+  },
+  bull: {
+    regime: 'bull',
+    maxEquityPct: 100,
+    baselineEquityPct: 80,
+    cashPct: 20,
+    maxPerNamePct: 10,
+    maxPositions: 6,
+    allowBreakout: true,
+    allowPullback: true,
+    sizeMultiplier: 1,
+    notes: [
+      'Bull market: breakouts / pullbacks run as planned',
+      'Keep 10–20% dry powder, single name ≤10%, at most 6 concurrent positions',
+    ],
+  },
+}
+
 export const REGIME_VERDICTS: Record<MarketRegime, RegimeVerdict> = {
   bear: {
     headline: '熊市：禁止新买入，只做止损/减仓',
@@ -127,11 +181,51 @@ export const REGIME_VERDICTS: Record<MarketRegime, RegimeVerdict> = {
   },
 }
 
-/** 熊市降级后的卡片文案（契约固定）。 */
-const BEAR_ACTION_LABEL = '熊市观望'
-const BEAR_SUMMARY = '熊市禁止新买入：等 MA60 回升与宽度修复'
-/** range 半仓提示理由（契约固定）。 */
-const RANGE_REASON = '震荡市半仓'
+/** 行动卡文案英文版（lang='en' 时由 regimeVerdict 返回）。 */
+export const REGIME_VERDICTS_EN: Record<MarketRegime, RegimeVerdict> = {
+  bear: {
+    headline: 'Bear market: no new buys, stop-loss / trim only',
+    doToday: [
+      'Execute stop-loss / trim discipline and protect capital',
+      'Keep cash ≥70% (baseline 20%, cap 30%)',
+      'Track MA60 recovery and breadth repair; wait for confirmation before buying',
+    ],
+    dontToday: ['No breakout chasing (breakout disabled)', 'No dip buying (pullback disabled)', 'No full position, no averaging down blindly'],
+  },
+  range: {
+    headline: 'Range market: half size, wait for confirmation',
+    doToday: [
+      'Only half-size buys after a confirmed pullback (size multiplier 0.5)',
+      'Single name ≤8%, at most 4 positions, equity exposure ≤60%',
+      'Keep 30–50% cash',
+    ],
+    dontToday: ['No chasing breakouts (breakout signals downgraded)', 'No full position, no leverage'],
+  },
+  bull: {
+    headline: 'Bull market: execute breakouts / pullbacks as planned',
+    doToday: [
+      'Run breakouts / pullbacks as planned (size multiplier 1)',
+      'Single name ≤10%, at most 6 positions, equity exposure ≤100%',
+      'Keep 10–20% dry powder',
+    ],
+    dontToday: ['Do not chase names far above their moving averages', 'Do not go all-in at once'],
+  },
+}
+
+/** 熊市降级后的卡片文案（契约固定；中英两套）。 */
+const BEAR_ACTION_LABELS: Record<RegimeLang, string> = {
+  zh: '熊市观望',
+  en: 'Bear watch',
+}
+const BEAR_SUMMARIES: Record<RegimeLang, string> = {
+  zh: '熊市禁止新买入：等 MA60 回升与宽度修复',
+  en: 'Bear market: no new buys — wait for MA60 recovery and breadth repair',
+}
+/** range 半仓提示理由（契约固定；中英两套）。 */
+const RANGE_REASONS: Record<RegimeLang, string> = {
+  zh: '震荡市半仓',
+  en: 'Range market: half size',
+}
 
 const BUY_ACTIONS: ReadonlySet<Strategy['action']> = new Set(['breakout', 'pullback'])
 
@@ -139,15 +233,17 @@ function isMarketRegime(value: unknown): value is MarketRegime {
   return value === 'bull' || value === 'range' || value === 'bear'
 }
 
-/** 取某档配置（返回副本，调用方修改不影响模块常量）。 */
-export function profileFor(regime: MarketRegime): RegimeProfile {
-  const profile = isMarketRegime(regime) ? REGIME_PROFILES[regime] : REGIME_PROFILES.range
+/** 取某档配置（返回副本，调用方修改不影响模块常量）。lang 默认 'zh'。 */
+export function profileFor(regime: MarketRegime, lang: RegimeLang = 'zh'): RegimeProfile {
+  const source = lang === 'en' ? REGIME_PROFILES_EN : REGIME_PROFILES
+  const profile = isMarketRegime(regime) ? source[regime] : source.range
   return { ...profile, notes: [...profile.notes] }
 }
 
-/** 取行动卡文案（返回副本，数组/字符串不可被调用方改坏）。 */
-export function regimeVerdict(regime: MarketRegime): RegimeVerdict {
-  const verdict = isMarketRegime(regime) ? REGIME_VERDICTS[regime] : REGIME_VERDICTS.range
+/** 取行动卡文案（返回副本，数组/字符串不可被调用方改坏）。lang 默认 'zh'。 */
+export function regimeVerdict(regime: MarketRegime, lang: RegimeLang = 'zh'): RegimeVerdict {
+  const source = lang === 'en' ? REGIME_VERDICTS_EN : REGIME_VERDICTS
+  const verdict = isMarketRegime(regime) ? source[regime] : source.range
   return { headline: verdict.headline, doToday: [...verdict.doToday], dontToday: [...verdict.dontToday] }
 }
 
@@ -177,10 +273,15 @@ function halfPct(pct: number): number {
  *   reasons 追加「震荡市半仓」；其他动作原样。
  * - bull：值原样（仍返回新数组/新对象，保证调用方拿到不可变结果）。
  * - regime 缺省/非法：原样返回入参数组（避免误过滤）。
+ * - lang 可选（默认 'zh'，完全向后兼容）；策略自带的 reasons 由上游生成，不会翻译。
  */
-export function applyRegimeFilter(strategies: Strategy[], regime: MarketRegime | undefined): Strategy[] {
+export function applyRegimeFilter(
+  strategies: Strategy[],
+  regime: MarketRegime | undefined,
+  lang: RegimeLang = 'zh',
+): Strategy[] {
   if (!isMarketRegime(regime)) return strategies
-  const profile = profileFor(regime)
+  const profile = profileFor(regime, lang)
 
   return strategies.map((strategy) => {
     if (!BUY_ACTIONS.has(strategy.action)) return cloneStrategy(strategy)
@@ -189,8 +290,8 @@ export function applyRegimeFilter(strategies: Strategy[], regime: MarketRegime |
       return {
         ...strategy,
         action: 'watch',
-        actionLabel: BEAR_ACTION_LABEL,
-        summary: BEAR_SUMMARY,
+        actionLabel: BEAR_ACTION_LABELS[lang],
+        summary: BEAR_SUMMARIES[lang],
         suggestedShares: undefined,
         suggestedPositionPct: undefined,
         reasons: [...strategy.reasons, profile.notes[0]],
@@ -204,7 +305,7 @@ export function applyRegimeFilter(strategies: Strategy[], regime: MarketRegime |
         ...strategy,
         suggestedShares: typeof shares === 'number' ? halfLotShares(shares) : undefined,
         suggestedPositionPct: typeof pct === 'number' ? halfPct(pct) : undefined,
-        reasons: [...strategy.reasons, RANGE_REASON],
+        reasons: [...strategy.reasons, RANGE_REASONS[lang]],
       }
     }
 

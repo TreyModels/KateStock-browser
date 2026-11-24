@@ -1,4 +1,5 @@
 import type { AlertKind, MarketPhase } from '@/types'
+import type { Lang } from '@/lib/i18n'
 
 /**
  * 盘中 UI 的展示辅助函数。
@@ -17,7 +18,14 @@ export interface PriceTag {
 }
 
 /** 价格旁的时段标记：收盘、非交易日一律显示「收盘」。 */
-export function phasePriceTag(phase: MarketPhase): PriceTag {
+export function phasePriceTag(phase: MarketPhase, lang: Lang = 'zh'): PriceTag {
+  if (lang === 'en') {
+    if (phase === 'trading') return { label: 'Live', live: true }
+    if (phase === 'auction') return { label: 'Auction', live: true }
+    if (phase === 'lunch') return { label: 'Lunch', live: false }
+    if (phase === 'preopen') return { label: 'Pre-open', live: false }
+    return { label: 'Close', live: false }
+  }
   if (phase === 'trading') return { label: '盘中', live: true }
   if (phase === 'auction') return { label: '竞价', live: true }
   if (phase === 'lunch') return { label: '午休', live: false }
@@ -61,18 +69,19 @@ export function formatBeijingDate(iso?: string): string | undefined {
 }
 
 /** 报价数据年龄：刚刚 / N 秒前 / N 分钟前 / N 小时前 / N 天前。 */
-export function formatDataAge(iso: string | undefined, now: number): string {
+export function formatDataAge(iso: string | undefined, now: number, lang: Lang = 'zh'): string {
   if (!iso) return '—'
   const time = Date.parse(iso)
   if (Number.isNaN(time)) return '—'
   const seconds = Math.max(0, Math.floor((now - time) / 1000))
-  if (seconds < 5) return '刚刚'
-  if (seconds < 60) return `${seconds} 秒前`
+  const en = lang === 'en'
+  if (seconds < 5) return en ? 'just now' : '刚刚'
+  if (seconds < 60) return en ? `${seconds}s ago` : `${seconds} 秒前`
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 60) return en ? `${minutes}m ago` : `${minutes} 分钟前`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
+  if (hours < 24) return en ? `${hours}h ago` : `${hours} 小时前`
+  return en ? `${Math.floor(hours / 24)}d ago` : `${Math.floor(hours / 24)} 天前`
 }
 
 /** (level / price - 1) * 100；价位或现价无效时返回 undefined，与 evaluateLive 的 priceLevel 规则一致。 */

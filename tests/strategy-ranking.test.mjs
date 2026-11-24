@@ -4,14 +4,19 @@ import {
   ACTIVITY_FULL_MATCHED,
   EVIDENCE_CAPS,
   EVIDENCE_LABELS,
+  EVIDENCE_LABELS_EN,
   EVIDENCE_TABLE,
   EVIDENCE_WEIGHTS,
   FIT_TABLE,
   RANKING_WEIGHTS,
+  STRATEGY_LABELS,
   STRATEGY_ROWS,
   rankStrategies,
 } from '../src/lib/strategy-ranking.ts'
-import { profileFor } from '../src/lib/regime-filter.ts'
+import { applyRegimeFilter, profileFor, regimeVerdict } from '../src/lib/regime-filter.ts'
+
+const HAS_CJK = /[\u4e00-\u9fa5]/
+const hasCjk = (value) => HAS_CJK.test(String(value))
 
 const makeStrategy = (overrides = {}) => ({
   stockId: 'stock-600000',
@@ -367,4 +372,113 @@ test('排序：confidence 非升序；同分按 fit 降序', () => {
       }
     }
   }
+})
+
+/* ── i18n：默认 zh 兼容 + en 文案 ───────────────────────────── */
+
+test('i18n：默认 lang 与显式 lang=zh 完全一致（向后兼容）', () => {
+  const strategies = strategiesOf(['stop', 'pullback', 'pullback', 'hold'])
+  for (const regime of ['bear', 'range', 'bull']) {
+    assert.deepEqual(
+      rankStrategies({ strategies, regime, breadthPct: 20.7 }),
+      rankStrategies({ strategies, regime, breadthPct: 20.7, lang: 'zh' }),
+    )
+    assert.deepEqual(profileFor(regime), profileFor(regime, 'zh'))
+    assert.deepEqual(regimeVerdict(regime), regimeVerdict(regime, 'zh'))
+  }
+  const buy = [makeStrategy({ action: 'pullback', suggestedShares: 500, suggestedPositionPct: 5 })]
+  assert.deepEqual(applyRegimeFilter(buy, 'bear'), applyRegimeFilter(buy, 'bear', 'zh'))
+  assert.deepEqual(applyRegimeFilter(buy, 'range'), applyRegimeFilter(buy, 'range', 'zh'))
+})
+
+test('i18n en：7 个策略标签全英文，数值/排序与 zh 一致', () => {
+  const strategies = strategiesOf(['stop', 'pullback', 'breakout', 'hold', 'watch'])
+  for (const regime of ['bear', 'range', 'bull']) {
+    const zh = rankStrategies({ strategies, regime })
+    const en = rankStrategies({ strategies, regime, lang: 'en' })
+    assert.deepEqual(idsOf(en), idsOf(zh), '排序不受语言影响')
+    for (const [index, row] of en.entries()) {
+      const zhRow = zh[index]
+      assert.equal(row.label, STRATEGY_LABELS.en[row.id])
+      assert.equal(hasCjk(row.label), false, `label 应为英文：${row.label}`)
+      // 数值/状态/证据不随语言变化
+      assert.equal(row.confidence, zhRow.confidence)
+      assert.equal(row.matched, zhRow.matched)
+      assert.equal(row.status, zhRow.status)
+      assert.equal(row.evidence, zhRow.evidence)
+      assert.equal(row.action, zhRow.action)
+    }
+  }
+  assert.deepEqual(STRATEGY_LABELS.en, {
+    stop: 'Stop-loss management',
+    reduce: 'Trim into strength',
+    hold: 'Hold position',
+    pullback: 'Buy the dip',
+    breakout: 'Breakout follow',
+    reversion: 'Oversold rebound',
+    watch: 'Wait and see',
+  })
+  assert.deepEqual(EVIDENCE_LABELS_EN, { PASS: 'Passed', PARTIAL: 'Partial', UNKNOWN: 'Unvalidated', FAIL: 'Failed' })
+})
+
+test('i18n en：reasons 全英文、2-3 条、首条 Evidence 且插值正确', () => {
+  const strategies = strategiesOf(['stop', 'pullback', 'pullback', 'watch'])
+  const scores = rankStrategies({ strategies, regime: 'bear', breadthPct: 20.7, lang: 'en' })
+  const map = byId(scores)
+
+  for (const score of scores) {
+    assert.ok(score.reasons.length >= 2 && score.reasons.length <= 3)
+    assert.match(score.reasons[0], /^Evidence: /)
+    assert.equal(score.reasons.some((reason) => hasCjk(reason)), false, `reasons 应全英文：${score.reasons.join(' | ')}`)
+  }
+
+  const pullback = map.pullback
+  assert.equal(pullback.label, 'Buy the dip')
+  assert.equal(pullback.status, 'blocked')
+  assert.match(pullback.reasons[0], /Evidence: Unvalidated \(no fee-adjusted sample of 5\+ years\)/)
+  assert.match(pullback.reasons[1], /Bear market: new buys disabled \(cash floor 70%\)/)
+  assert.match(pullback.reasons[2], /Current 2 Buy the dip setup\(s\), not trusted in the bear market/)
+  assert.match(pullback.reasons[2], /Breadth 20\.7% below 60%/)
+
+  const stop = map.stop
+  assert.match(stop.reasons[0], /Evidence: Passed \(risk-control discipline only, not alpha\)/)
+  assert.match(stop.reasons[2], /1 Stop-loss management setup\(s\) in the current list/)
+
+  const watch = map.watch
+  assert.match(watch.reasons[0], /Evidence: Passed \(not trading is the default, trivially passed\)/)
+})
+
+test('i18n en：regime profile / verdict / 降级文案为英文', () => {
+  const bearProfile = profileFor('bear', 'en')
+  assert.equal(bearProfile.regime, 'bear')
+  assert.equal(bearProfile.notes.length, 3)
+  assert.match(bearProfile.notes[0], /Bear market: stop-loss \/ trim only, no new positions/)
+  assert.match(bearProfile.notes[1], /Cash ≥70%/)
+  assert.equal(bearProfile.notes.some((note) => hasCjk(note)), false)
+
+  const rangeVerdict = regimeVerdict('range', 'en')
+  assert.match(rangeVerdict.headline, /Range market: half size/)
+  assert.ok(rangeVerdict.doToday.some((item) => /size multiplier 0\.5/.test(item)))
+  assert.ok(rangeVerdict.dontToday.length > 0)
+  assert.equal(rangeVerdict.doToday.some((item) => hasCjk(item)), false)
+
+  const bearFiltered = applyRegimeFilter([makeStrategy({ action: 'pullback' })], 'bear', 'en')
+  assert.equal(bearFiltered[0].action, 'watch')
+  assert.equal(bearFiltered[0].actionLabel, 'Bear watch')
+  assert.match(bearFiltered[0].summary, /^Bear market: no new buys/)
+  assert.equal(bearFiltered[0].suggestedShares, undefined)
+  assert.equal(bearFiltered[0].reasons.includes(bearProfile.notes[0]), true)
+
+  const rangeFiltered = applyRegimeFilter(
+    [makeStrategy({ action: 'pullback', suggestedShares: 500, suggestedPositionPct: 5 })],
+    'range',
+    'en',
+  )
+  assert.equal(rangeFiltered[0].action, 'pullback')
+  assert.equal(rangeFiltered[0].suggestedShares, 200)
+  assert.equal(rangeFiltered[0].reasons.includes('Range market: half size'), true)
+
+  // 非买入动作在 en 下同样不追加英文 reason、值原样
+  const hold = [makeStrategy({ action: 'hold', actionLabel: 'Hold position' })]
+  assert.deepEqual(applyRegimeFilter(hold, 'bear', 'en'), hold)
 })

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { getLang, type Lang } from '@/lib/i18n'
 import type { MarketPhase } from '@/types'
 import { formatBeijingClock, isLivePricePhase, phasePriceTag } from './quote-utils'
 
@@ -58,16 +59,17 @@ export function LivePrice({
     return () => window.clearTimeout(timer)
   }, [value])
 
-  const tag = phasePriceTag(phase)
+  const lang: Lang = getLang()
+  const tag = phasePriceTag(phase, lang)
   const displayLive = live && tag.live
   const staleLive = displayLive && stale
   // 交易时段但没有本轮报价（EOD 收盘价或无数据）时不能标「盘中」，统一标「收盘」。
   const tagText = staleLive
-    ? `上次报价 ${formatBeijingClock(quoteAt)}`
+    ? (lang === 'en' ? `Last quote ${formatBeijingClock(quoteAt)}` : `上次报价 ${formatBeijingClock(quoteAt)}`)
     : displayLive
       ? tag.label
       : isLivePricePhase(phase)
-        ? '收盘'
+        ? (lang === 'en' ? 'Close' : '收盘')
         : tag.label
   const tagClass = staleLive ? 'price-tag price-tag-stale' : displayLive ? 'price-tag price-tag-live' : 'price-tag'
   const positive = Number.isFinite(changePct) && changePct >= 0

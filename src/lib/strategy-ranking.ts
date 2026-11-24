@@ -28,10 +28,12 @@ import { profileFor, type RegimeProfile } from './regime-filter.ts'
 export type StrategyScoreId = 'stop' | 'reduce' | 'hold' | 'pullback' | 'breakout' | 'reversion' | 'watch'
 export type StrategyScoreStatus = 'active' | 'degraded' | 'blocked'
 export type EvidenceState = 'PASS' | 'PARTIAL' | 'UNKNOWN' | 'FAIL'
+/** 语言字面量类型（不 import i18n.ts，避免循环依赖；默认 zh 保证向后兼容）。 */
+export type RankingLang = 'zh' | 'en'
 
 export interface StrategyScore {
   id: StrategyScoreId
-  /** 中文标签：止损管理 / 逢高减仓 / 持有待涨 / 回踩低吸 / 突破跟随 / 超跌反弹 / 观望等待 */
+  /** 中文标签（lang='en' 时为英文标签）：止损管理 / 逢高减仓 / 持有待涨 / 回踩低吸 / 突破跟随 / 超跌反弹 / 观望等待 */
   label: string
   action: StrategyAction
   status: StrategyScoreStatus
@@ -39,7 +41,7 @@ export interface StrategyScore {
   confidence: number
   /** 当前清单中命中该策略的股票数（基于未过滤策略、按 action 计数）。 */
   matched: number
-  /** 2-3 条中文依据。 */
+  /** 2-3 条依据（中文，lang='en' 时为英文）。 */
   reasons: string[]
   /** 来自稳健性门槛（暂用内置 provisional 表）。 */
   evidence: EvidenceState
@@ -49,10 +51,12 @@ export interface RankStrategiesInput {
   /** 未过滤的原始策略（用于统计 matched）。 */
   strategies: Strategy[]
   regime: MarketRegime
-  /** 可选；缺省用 profileFor(regime)。 */
+  /** 可选；缺省用 profileFor(regime, lang)。 */
   profile?: RegimeProfile
   /** 可选；市场宽度（0-100），用于原因文案。 */
   breadthPct?: number
+  /** 可选语言；默认 'zh'（完全向后兼容）。 */
+  lang?: RankingLang
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -88,12 +92,47 @@ export const EVIDENCE_CAPS: Record<EvidenceState, number | null> = {
   FAIL: 55,
 }
 
-/** 证据状态中文标签（UI 徽标用，如「证据：未验证」）。 */
+/** 证据状态中文标签（UI 徽标用，如「证据：未验证」；保留导出以兼容旧调用）。 */
 export const EVIDENCE_LABELS: Record<EvidenceState, string> = {
   PASS: '通过',
   PARTIAL: '部分通过',
   UNKNOWN: '未验证',
   FAIL: '未通过',
+}
+
+/** 证据状态英文标签（lang='en' 时 UI 徽标可用）。 */
+export const EVIDENCE_LABELS_EN: Record<EvidenceState, string> = {
+  PASS: 'Passed',
+  PARTIAL: 'Partial',
+  UNKNOWN: 'Unvalidated',
+  FAIL: 'Failed',
+}
+
+const EVIDENCE_LABELS_BY_LANG: Record<RankingLang, Record<EvidenceState, string>> = {
+  zh: EVIDENCE_LABELS,
+  en: EVIDENCE_LABELS_EN,
+}
+
+/** 七种策略的中英文标签。 */
+export const STRATEGY_LABELS: Record<RankingLang, Record<StrategyScoreId, string>> = {
+  zh: {
+    stop: '止损管理',
+    reduce: '逢高减仓',
+    hold: '持有待涨',
+    pullback: '回踩低吸',
+    breakout: '突破跟随',
+    reversion: '超跌反弹',
+    watch: '观望等待',
+  },
+  en: {
+    stop: 'Stop-loss management',
+    reduce: 'Trim into strength',
+    hold: 'Hold position',
+    pullback: 'Buy the dip',
+    breakout: 'Breakout follow',
+    reversion: 'Oversold rebound',
+    watch: 'Wait and see',
+  },
 }
 
 /**
@@ -176,40 +215,70 @@ export const STRATEGY_ROWS: readonly StrategyRow[] = [
   { id: 'watch', label: '观望等待', action: 'watch', isBuy: false },
 ]
 
-const REGIME_LABELS: Record<MarketRegime, string> = {
-  bull: '牛市',
-  range: '震荡市',
-  bear: '熊市',
+const REGIME_LABELS: Record<RankingLang, Record<MarketRegime, string>> = {
+  zh: { bull: '牛市', range: '震荡市', bear: '熊市' },
+  en: { bull: 'Bull market', range: 'Range market', bear: 'Bear market' },
 }
 
-/** 每种策略在各 regime 下的一句中文解释。 */
-const ROW_HINTS: Record<MarketRegime, Record<StrategyScoreId, string>> = {
-  bear: {
-    stop: '止损管理优先级最高，先控回撤',
-    reduce: '逢高减仓优先，提前、分批锁定风险',
-    hold: '只限已有持仓且结构未破，不加仓',
-    pullback: '回踩低吸在熊市容易接飞刀',
-    breakout: '突破跟随是牛市工具，熊市关闭',
-    reversion: '超跌反弹需三重确认，代码尚未实现',
-    watch: '现金也是仓位，等待宽度修复',
+/** 每种策略在各 regime 下的一句解释（中英两套）。 */
+const ROW_HINTS: Record<RankingLang, Record<MarketRegime, Record<StrategyScoreId, string>>> = {
+  zh: {
+    bear: {
+      stop: '止损管理优先级最高，先控回撤',
+      reduce: '逢高减仓优先，提前、分批锁定风险',
+      hold: '只限已有持仓且结构未破，不加仓',
+      pullback: '回踩低吸在熊市容易接飞刀',
+      breakout: '突破跟随是牛市工具，熊市关闭',
+      reversion: '超跌反弹需三重确认，代码尚未实现',
+      watch: '现金也是仓位，等待宽度修复',
+    },
+    range: {
+      stop: '止损管理不受震荡影响',
+      reduce: '逢高减仓可正常执行',
+      hold: '持有待涨可正常执行',
+      pullback: '回踩确认后可用半仓参与',
+      breakout: '突破信号降级处理，确认后再动',
+      reversion: '均值回归策略仅回测验证',
+      watch: '无确认信号时观望',
+    },
+    bull: {
+      stop: '止损管理保持不变',
+      reduce: '逢高减仓保持不变',
+      hold: '持有待涨正常执行',
+      pullback: '回踩低吸正常执行',
+      breakout: '突破跟随正常执行',
+      reversion: '超跌反弹仅回测验证',
+      watch: '无信号时等待，保留现金机动',
+    },
   },
-  range: {
-    stop: '止损管理不受震荡影响',
-    reduce: '逢高减仓可正常执行',
-    hold: '持有待涨可正常执行',
-    pullback: '回踩确认后可用半仓参与',
-    breakout: '突破信号降级处理，确认后再动',
-    reversion: '均值回归策略仅回测验证',
-    watch: '无确认信号时观望',
-  },
-  bull: {
-    stop: '止损管理保持不变',
-    reduce: '逢高减仓保持不变',
-    hold: '持有待涨正常执行',
-    pullback: '回踩低吸正常执行',
-    breakout: '突破跟随正常执行',
-    reversion: '超跌反弹仅回测验证',
-    watch: '无信号时等待，保留现金机动',
+  en: {
+    bear: {
+      stop: 'Stop-loss management has top priority to cap drawdown',
+      reduce: 'Trim into strength early, lock in risk in batches',
+      hold: 'Only for existing positions with intact structure; no adds',
+      pullback: 'Buying the dip can catch a falling knife in a bear market',
+      breakout: 'Breakout follow-through is a bull-market tool; switched off in bear',
+      reversion: 'Oversold rebound needs triple confirmation; not implemented yet',
+      watch: 'Cash is a position too; wait for breadth repair',
+    },
+    range: {
+      stop: 'Stop-loss management is unaffected by range conditions',
+      reduce: 'Trim into strength is executable',
+      hold: 'Hold position is executable',
+      pullback: 'Half size may join after a confirmed pullback',
+      breakout: 'Breakout signals are downgraded; wait for confirmation',
+      reversion: 'Mean-reversion strategy is backtest-only',
+      watch: 'Wait when there is no confirmation',
+    },
+    bull: {
+      stop: 'Stop-loss management unchanged',
+      reduce: 'Trim into strength unchanged',
+      hold: 'Hold position executes normally',
+      pullback: 'Buy the dip executes normally',
+      breakout: 'Breakout follow-through executes normally',
+      reversion: 'Oversold rebound is backtest-only',
+      watch: 'Wait without signals and keep dry powder',
+    },
   },
 }
 
@@ -265,15 +334,28 @@ function confidenceOf(fit: number, evidence: EvidenceState, matched: number): nu
   return cap === null ? raw : Math.min(cap, raw)
 }
 
-/** 证据标签文案（reasons 必须包含「证据：…」；UI 徽标另有 evidence 字段）。 */
-function evidenceReason(row: StrategyRow, evidence: EvidenceState): string {
-  const label = `证据：${EVIDENCE_LABELS[evidence]}`
+/** 证据标签文案（reasons 必须包含「证据：…」/「Evidence: …」；UI 徽标另有 evidence 字段）。 */
+function evidenceReason(row: StrategyRow, evidence: EvidenceState, lang: RankingLang): string {
+  const label = lang === 'zh'
+    ? `证据：${EVIDENCE_LABELS_BY_LANG.zh[evidence]}`
+    : `Evidence: ${EVIDENCE_LABELS_BY_LANG.en[evidence]}`
   if (evidence === 'PASS') {
-    return row.id === 'stop' ? `${label}（仅作风控纪律，不是 alpha）` : `${label}（不交易是默认，平凡通过）`
+    if (lang === 'zh') {
+      return row.id === 'stop' ? `${label}（仅作风控纪律，不是 alpha）` : `${label}（不交易是默认，平凡通过）`
+    }
+    return row.id === 'stop'
+      ? `${label} (risk-control discipline only, not alpha)`
+      : `${label} (not trading is the default, trivially passed)`
   }
-  if (evidence === 'PARTIAL') return `${label}（样本不足，需补检验）`
-  if (evidence === 'FAIL') return `${label}（稳健性门槛未过）`
-  return `${label}（缺 ≥5 年扣费样本）`
+  if (evidence === 'PARTIAL') {
+    return lang === 'zh' ? `${label}（样本不足，需补检验）` : `${label} (insufficient samples)`
+  }
+  if (evidence === 'FAIL') {
+    return lang === 'zh' ? `${label}（稳健性门槛未过）` : `${label} (robustness gate failed)`
+  }
+  return lang === 'zh'
+    ? `${label}（缺 ≥5 年扣费样本）`
+    : `${label} (no fee-adjusted sample of 5+ years)`
 }
 
 function reasonsFor(
@@ -284,41 +366,65 @@ function reasonsFor(
   profile: RegimeProfile,
   breadthPct: number | undefined,
   evidence: EvidenceState,
+  lang: RankingLang,
 ): string[] {
-  const regimeLabel = REGIME_LABELS[regime]
+  const regimeLabel = REGIME_LABELS[lang][regime]
+  const rowLabel = STRATEGY_LABELS[lang][row.id]
   // 第 1 条：证据标签（必须出现，UI 也有 evidence 徽标）
-  const reasons: string[] = [evidenceReason(row, evidence)]
+  const reasons: string[] = [evidenceReason(row, evidence, lang)]
 
   // 第 2 条：regime 下的状态解释
-  if (status === 'blocked') {
-    reasons.push(`${regimeLabel}：买入类策略禁用（现金下限 ${profile.cashPct}%）`)
+  if (lang === 'zh') {
+    if (status === 'blocked') {
+      reasons.push(`${regimeLabel}：买入类策略禁用（现金下限 ${profile.cashPct}%）`)
+    } else if (status === 'degraded') {
+      reasons.push(`${regimeLabel}：半仓降级（仓位系数 ${profile.sizeMultiplier}）`)
+    } else if (row.isBuy) {
+      reasons.push(`${regimeLabel}：买入类策略可执行`)
+    } else {
+      reasons.push(`${regimeLabel}：${rowLabel}适用当前环境`)
+    }
+  } else if (status === 'blocked') {
+    reasons.push(`${regimeLabel}: new buys disabled (cash floor ${profile.cashPct}%)`)
   } else if (status === 'degraded') {
-    reasons.push(`${regimeLabel}：半仓降级（仓位系数 ${profile.sizeMultiplier}）`)
+    reasons.push(`${regimeLabel}: half size (size multiplier ${profile.sizeMultiplier})`)
   } else if (row.isBuy) {
-    reasons.push(`${regimeLabel}：买入类策略可执行`)
+    reasons.push(`${regimeLabel}: buy strategies enabled`)
   } else {
-    reasons.push(`${regimeLabel}：${row.label}适用当前环境`)
+    reasons.push(`${regimeLabel}: ${rowLabel} applies in this environment`)
   }
 
   // 第 3 条：命中情况 + 宽度（合并为一行为，保持 2-3 条）
   const detail: string[] = []
   if (matched > 0) {
-    detail.push(
-      status === 'blocked'
-        ? `当前 ${matched} 只${row.label}形态，${regimeLabel}不采信`
-        : `当前清单 ${matched} 只${row.label}形态`,
-    )
+    if (lang === 'zh') {
+      detail.push(
+        status === 'blocked'
+          ? `当前 ${matched} 只${rowLabel}形态，${regimeLabel}不采信`
+          : `当前清单 ${matched} 只${rowLabel}形态`,
+      )
+    } else {
+      detail.push(
+        status === 'blocked'
+          ? `Current ${matched} ${rowLabel} setup(s), not trusted in the ${regimeLabel.toLowerCase()}`
+          : `${matched} ${rowLabel} setup(s) in the current list`,
+      )
+    }
   } else {
-    detail.push(ROW_HINTS[regime][row.id])
+    detail.push(ROW_HINTS[lang][regime][row.id])
   }
   if (typeof breadthPct === 'number' && Number.isFinite(breadthPct)) {
     detail.push(
-      breadthPct >= 60
-        ? `宽度 ${breadthPct.toFixed(1)}% 高于 60%，广度修复`
-        : `宽度 ${breadthPct.toFixed(1)}% 低于 60%`,
+      lang === 'zh'
+        ? breadthPct >= 60
+          ? `宽度 ${breadthPct.toFixed(1)}% 高于 60%，广度修复`
+          : `宽度 ${breadthPct.toFixed(1)}% 低于 60%`
+        : breadthPct >= 60
+          ? `Breadth ${breadthPct.toFixed(1)}% above 60%, breadth repairing`
+          : `Breadth ${breadthPct.toFixed(1)}% below 60%`,
     )
   }
-  reasons.push(detail.join('；'))
+  reasons.push(detail.join(lang === 'zh' ? '；' : '; '))
 
   return reasons
 }
@@ -334,11 +440,13 @@ function reasonsFor(
  * - confidence 为 0-100 适配度；排序：confidence 降序，同分按 fit 降序（再同则按策略表顺序稳定排序）。
  * - 始终返回 7 行常量策略表。
  * - regime 缺省/非法时按 'range' 处理（与 regime.ts 的兜底一致）。
+ * - lang 可选（默认 'zh'）：'en' 时 label/reasons 走英文文案；confidence/matched/status/evidence 不受影响。
  */
 export function rankStrategies(input: RankStrategiesInput): StrategyScore[] {
   const strategies = Array.isArray(input.strategies) ? input.strategies : []
   const regime = isMarketRegime(input.regime) ? input.regime : 'range'
-  const profile = input.profile ?? profileFor(regime)
+  const lang: RankingLang = input.lang === 'en' ? 'en' : 'zh'
+  const profile = input.profile ?? profileFor(regime, lang)
   const breadthPct = input.breadthPct
 
   const ranked = STRATEGY_ROWS.map((row) => {
@@ -348,12 +456,12 @@ export function rankStrategies(input: RankStrategiesInput): StrategyScore[] {
     const status = statusOf(row, profile)
     const score: StrategyScore = {
       id: row.id,
-      label: row.label,
+      label: STRATEGY_LABELS[lang][row.id],
       action: row.action,
       status,
       confidence: confidenceOf(fit, evidence, matched),
       matched,
-      reasons: reasonsFor(row, regime, status, matched, profile, breadthPct, evidence),
+      reasons: reasonsFor(row, regime, status, matched, profile, breadthPct, evidence, lang),
       evidence,
     }
     return { score, fit }

@@ -43,6 +43,12 @@ import type { Bar } from '@/types'
  * 契约类型
  * ───────────────────────────────────────────────────────────── */
 
+/**
+ * 文案语言（可选，默认 'zh'；由 UI 传入，避免 import i18n.ts 造成循环依赖）。
+ * 只影响 evidence / error 文案，数值、百分比、日期格式中英文完全一致。
+ */
+export type RegimeLang = 'zh' | 'en'
+
 export type MarketRegime = 'bull' | 'range' | 'bear'
 
 export interface RegimeInfo {
@@ -59,6 +65,8 @@ export interface RegimeInput {
   watchlist: Bar[][]
   /** 可选：只用该日期（含）之前的 bar，防未来函数；缺省以各序列最后一天为当日。 */
   asOf?: string
+  /** 可选文案语言（默认 'zh'）。 */
+  lang?: RegimeLang
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -184,8 +192,109 @@ function latestDate(seriesList: Bar[][]): string {
   return latest
 }
 
-function regimeLabel(regime: MarketRegime): string {
-  return regime === 'bull' ? '强势（牛）' : regime === 'bear' ? '弱势（熊）' : '震荡'
+/* ─────────────────────────────────────────────────────────────
+ * 文案（zh / en）：只影响 evidence / error；数值与百分比格式完全一致
+ * ───────────────────────────────────────────────────────────── */
+
+interface RegimeMessages {
+  regimeLabel: (regime: MarketRegime) => string
+  index: {
+    closeMa20: (close: string, ma20: string, diff: string) => string
+    closeMa60: (ma60: string, diff: string, ma60Diff: string) => string
+    closeMa120: (ma120: string, diff: string) => string
+    slope: (lookback: number, slopePct: string, up: boolean) => string
+    drawdown: (lookback: number, high: string, drawdown: string) => string
+    breadth: (pct: string, above: number, total: number, threshold: number) => string
+    breadthUnavailable: string
+    score: (score: number, total: number, label: string, alignment: string, confidence: string) => string
+  }
+  breadth: {
+    indexMissing: string
+    breadthLine: (pct: string, above: number, total: number, bull: number, bear: number) => string
+    score: (label: string, alignment: string, confidence: string) => string
+    noDataIndex: string
+    noDataBreadth: string
+  }
+  fetchError: (tencentReason: string, sinaReason: string) => string
+  parse: {
+    tencentMissingSymbol: string
+    tencentMissingBars: string
+    tencentIncomplete: string
+    tencentDate: string
+    sinaNotArray: string
+    sinaFormat: string
+    sinaDate: string
+  }
+}
+
+const MESSAGES: Record<RegimeLang, RegimeMessages> = {
+  zh: {
+    regimeLabel: (regime) => (regime === 'bull' ? '强势（牛）' : regime === 'bear' ? '弱势（熊）' : '震荡'),
+    index: {
+      closeMa20: (close, ma20, diff) => `沪深300 收盘 ${close}，MA20 ${ma20}（${diff}）`,
+      closeMa60: (ma60, diff, ma60Diff) => `收盘 vs MA60 ${ma60}（${diff}）；MA20 vs MA60（${ma60Diff}）`,
+      closeMa120: (ma120, diff) => `收盘 vs MA120 ${ma120}（${diff}）`,
+      slope: (lookback, slopePct, up) => `MA60 近 ${lookback} 日斜率 ${slopePct}%（${up ? '上行' : '下行'}）`,
+      drawdown: (lookback, high, drawdown) => `距 ${lookback} 日高点 ${high} 回撤 ${drawdown}%`,
+      breadth: (pct, above, total, threshold) => `宽度 ${pct}%（${above}/${total} 只收盘 > MA20，阈值 ≥${threshold}%）`,
+      breadthUnavailable: '宽度不可用（没有 ≥20 根日线的标的）',
+      score: (score, total, label, alignment, confidence) => `评分 ${score}/${total} → 判定${label}；alignment ${alignment}，confidence ${confidence}`,
+    },
+    breadth: {
+      indexMissing: '沪深300 日线缺失或不足 120 根，改用宽度判定',
+      breadthLine: (pct, above, total, bull, bear) =>
+        `宽度 ${pct}%（${above}/${total} 只收盘 > MA20；阈值 ≥${bull}% 牛 / ≤${bear}% 熊）`,
+      score: (label, alignment, confidence) => `判定${label}；alignment ${alignment}，confidence ${confidence}`,
+      noDataIndex: '沪深300 日线缺失或不足 120 根',
+      noDataBreadth: '宽度不可用（没有 ≥20 根日线的标的），暂按震荡处理',
+    },
+    fetchError: (tencentReason, sinaReason) => `沪深300 日线获取失败（腾讯：${tencentReason}；新浪：${sinaReason}）`,
+    parse: {
+      tencentMissingSymbol: '腾讯响应缺少 sh000300',
+      tencentMissingBars: '腾讯响应缺少 sh000300 日线',
+      tencentIncomplete: '腾讯指数日线字段不完整',
+      tencentDate: '腾讯指数日线日期非法',
+      sinaNotArray: '新浪响应不是有效日线数组',
+      sinaFormat: '新浪指数日线格式非法',
+      sinaDate: '新浪指数日线日期非法',
+    },
+  },
+  en: {
+    regimeLabel: (regime) => (regime === 'bull' ? 'Bullish (bull)' : regime === 'bear' ? 'Bearish (bear)' : 'Neutral (range)'),
+    index: {
+      closeMa20: (close, ma20, diff) => `CSI 300 close ${close} vs MA20 ${ma20} (${diff})`,
+      closeMa60: (ma60, diff, ma60Diff) => `Close vs MA60 ${ma60} (${diff}); MA20 vs MA60 (${ma60Diff})`,
+      closeMa120: (ma120, diff) => `Close vs MA120 ${ma120} (${diff})`,
+      slope: (lookback, slopePct, up) => `MA60 ${lookback}-day slope ${slopePct}% (${up ? 'rising' : 'falling'})`,
+      drawdown: (lookback, high, drawdown) => `${lookback}-day high ${high}, drawdown ${drawdown}%`,
+      breadth: (pct, above, total, threshold) => `Breadth ${pct}% (${above}/${total} closes above MA20, threshold >=${threshold}%)`,
+      breadthUnavailable: 'Breadth unavailable (no symbol with >=20 daily bars)',
+      score: (score, total, label, alignment, confidence) => `Score ${score}/${total} -> ${label}; alignment ${alignment}, confidence ${confidence}`,
+    },
+    breadth: {
+      indexMissing: 'CSI 300 daily bars missing or fewer than 120; using breadth only',
+      breadthLine: (pct, above, total, bull, bear) =>
+        `Breadth ${pct}% (${above}/${total} closes above MA20; thresholds >=${bull}% bull / <=${bear}% bear)`,
+      score: (label, alignment, confidence) => `Regime ${label}; alignment ${alignment}, confidence ${confidence}`,
+      noDataIndex: 'CSI 300 daily bars missing or fewer than 120',
+      noDataBreadth: 'Breadth unavailable (no symbol with >=20 daily bars); treated as range',
+    },
+    fetchError: (tencentReason, sinaReason) =>
+      `CSI 300 daily bars fetch failed (Tencent: ${tencentReason}; Sina: ${sinaReason})`,
+    parse: {
+      tencentMissingSymbol: 'Tencent response is missing sh000300',
+      tencentMissingBars: 'Tencent response has no sh000300 daily bars',
+      tencentIncomplete: 'Tencent index daily bar fields are incomplete',
+      tencentDate: 'Tencent index daily bar has an invalid date',
+      sinaNotArray: 'Sina response is not a valid daily-bar array',
+      sinaFormat: 'Sina index daily bar has an invalid format',
+      sinaDate: 'Sina index daily bar has an invalid date',
+    },
+  },
+}
+
+function messagesFor(lang: RegimeLang | undefined): RegimeMessages {
+  return lang === 'en' ? MESSAGES.en : MESSAGES.zh
 }
 
 /** 可选 asOf 截断：只用 asOf 当天及之前的 bar。 */
@@ -201,19 +310,21 @@ function truncateAt(bars: Bar[], asOf?: string): Bar[] {
 /**
  * 纯函数：计算市场状态。优先用沪深300 日线（≥120 根），不足则只用宽度。
  * 不抛错：数据全缺时返回 source='breadth'、range、confidence 0。
+ * `input.lang` 控制 evidence 文案（'zh' 默认 / 'en'），数值与百分比格式一致。
  */
 export function computeRegime(input: RegimeInput): RegimeInfo {
+  const t = messagesFor(input.lang)
   const indexBars = truncateAt(normalizeBars(input.indexBars), input.asOf)
   const watchlist = (input.watchlist ?? []).map((series) => truncateAt(normalizeBars(series), input.asOf))
   const breadth = computeBreadth(watchlist)
 
   if (indexBars.length >= REGIME_MIN_INDEX_BARS) {
-    return computeIndexRegime(indexBars, breadth)
+    return computeIndexRegime(indexBars, breadth, t)
   }
-  return computeBreadthRegime(watchlist, breadth)
+  return computeBreadthRegime(watchlist, breadth, t)
 }
 
-function computeIndexRegime(indexBars: Bar[], breadth: BreadthResult): RegimeInfo {
+function computeIndexRegime(indexBars: Bar[], breadth: BreadthResult, t: RegimeMessages): RegimeInfo {
   const closes = closesOf(indexBars)
   const close = closes[closes.length - 1]
   const ma20 = smaAt(closes, REGIME_MA_SHORT) as number
@@ -267,15 +378,15 @@ function computeIndexRegime(indexBars: Bar[], breadth: BreadthResult): RegimeInf
   const confidence = round1(clamp(rawConfidence, 0, 100))
 
   const evidence = [
-    `沪深300 收盘 ${fmt(close)}，MA20 ${fmt(ma20)}（${pct(close / ma20 - 1)}）`,
-    `收盘 vs MA60 ${fmt(ma60)}（${pct(close / ma60 - 1)}）；MA20 vs MA60（${pct(ma20 / ma60 - 1)}）`,
-    `收盘 vs MA120 ${fmt(ma120)}（${pct(close / ma120 - 1)}）`,
-    `MA60 近 ${REGIME_SLOPE_LOOKBACK} 日斜率 ${fmt(slopePct)}%（${slopePct > 0 ? '上行' : '下行'}）`,
-    `距 ${highLookback.length} 日高点 ${fmt(high250)} 回撤 ${fmt(drawdownPct)}%`,
+    t.index.closeMa20(fmt(close), fmt(ma20), pct(close / ma20 - 1)),
+    t.index.closeMa60(fmt(ma60), pct(close / ma60 - 1), pct(ma20 / ma60 - 1)),
+    t.index.closeMa120(fmt(ma120), pct(close / ma120 - 1)),
+    t.index.slope(REGIME_SLOPE_LOOKBACK, fmt(slopePct), slopePct > 0),
+    t.index.drawdown(highLookback.length, fmt(high250), fmt(drawdownPct)),
     breadthPct === undefined
-      ? '宽度不可用（没有 ≥20 根日线的标的）'
-      : `宽度 ${fmt(breadthPct)}%（${breadth.above}/${breadth.total} 只收盘 > MA20，阈值 ≥${REGIME_BREADTH_BULL}%）`,
-    `评分 ${score}/7 → 判定${regimeLabel(regime)}；alignment ${fmt(alignment, 3)}，confidence ${fmt(confidence, 1)}`,
+      ? t.index.breadthUnavailable
+      : t.index.breadth(fmt(breadthPct), breadth.above, breadth.total, REGIME_BREADTH_BULL),
+    t.index.score(score, 7, t.regimeLabel(regime), fmt(alignment, 3), fmt(confidence, 1)),
   ]
 
   return {
@@ -288,7 +399,7 @@ function computeIndexRegime(indexBars: Bar[], breadth: BreadthResult): RegimeInf
   }
 }
 
-function computeBreadthRegime(watchlist: Bar[][], breadth: BreadthResult): RegimeInfo {
+function computeBreadthRegime(watchlist: Bar[][], breadth: BreadthResult, t: RegimeMessages): RegimeInfo {
   const asOf = latestDate(watchlist)
   if (breadth.pct === undefined) {
     return {
@@ -296,7 +407,7 @@ function computeBreadthRegime(watchlist: Bar[][], breadth: BreadthResult): Regim
       confidence: 0,
       asOf,
       source: 'breadth',
-      evidence: ['沪深300 日线缺失或不足 120 根', '宽度不可用（没有 ≥20 根日线的标的），暂按震荡处理'],
+      evidence: [t.breadth.noDataIndex, t.breadth.noDataBreadth],
     }
   }
 
@@ -318,9 +429,9 @@ function computeBreadthRegime(watchlist: Bar[][], breadth: BreadthResult): Regim
     asOf,
     source: 'breadth',
     evidence: [
-      '沪深300 日线缺失或不足 120 根，改用宽度判定',
-      `宽度 ${fmt(breadthPct)}%（${breadth.above}/${breadth.total} 只收盘 > MA20；阈值 ≥${REGIME_BREADTH_BULL}% 牛 / ≤${REGIME_BREADTH_BEAR}% 熊）`,
-      `判定${regimeLabel(regime)}；alignment ${fmt(alignment, 3)}，confidence ${fmt(confidence, 1)}`,
+      t.breadth.indexMissing,
+      t.breadth.breadthLine(fmt(breadthPct), breadth.above, breadth.total, REGIME_BREADTH_BULL, REGIME_BREADTH_BEAR),
+      t.breadth.score(t.regimeLabel(regime), fmt(alignment, 3), fmt(confidence, 1)),
     ],
     breadthPct: round1(breadthPct),
   }
@@ -361,20 +472,20 @@ function buildBar(date: string, open: number, high: number, low: number, close: 
   }
 }
 
-function barsFromTencentIndex(payload: unknown): Bar[] {
+function barsFromTencentIndex(payload: unknown, t: RegimeMessages): Bar[] {
   const data =
     typeof payload === 'object' && payload !== null && typeof (payload as { data?: unknown }).data === 'object'
       ? (payload as { data: Record<string, unknown> }).data
       : undefined
   const node = data?.[INDEX_SYMBOL] as Record<string, unknown> | undefined
-  if (!node) throw new Error('腾讯响应缺少 sh000300')
+  if (!node) throw new Error(t.parse.tencentMissingSymbol)
   const rows = (Array.isArray(node.qfqday) ? node.qfqday : node.day) as unknown
-  if (!Array.isArray(rows) || rows.length === 0) throw new Error('腾讯响应缺少 sh000300 日线')
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error(t.parse.tencentMissingBars)
   const bars: Bar[] = []
   for (const row of rows) {
-    if (!Array.isArray(row) || row.length < 6) throw new Error('腾讯指数日线字段不完整')
+    if (!Array.isArray(row) || row.length < 6) throw new Error(t.parse.tencentIncomplete)
     const [date, open, close, high, low, volume] = row as unknown[]
-    if (typeof date !== 'string' || !DATE_PATTERN.test(date)) throw new Error('腾讯指数日线日期非法')
+    if (typeof date !== 'string' || !DATE_PATTERN.test(date)) throw new Error(t.parse.tencentDate)
     const previousClose = bars.length > 0 ? bars[bars.length - 1].close : undefined
     bars.push(
       buildBar(
@@ -391,14 +502,14 @@ function barsFromTencentIndex(payload: unknown): Bar[] {
   return normalizeBars(bars)
 }
 
-function barsFromSinaIndex(payload: unknown): Bar[] {
-  if (!Array.isArray(payload) || payload.length === 0) throw new Error('新浪响应不是有效日线数组')
+function barsFromSinaIndex(payload: unknown, t: RegimeMessages): Bar[] {
+  if (!Array.isArray(payload) || payload.length === 0) throw new Error(t.parse.sinaNotArray)
   const bars: Bar[] = []
   for (const row of payload) {
-    if (typeof row !== 'object' || row === null) throw new Error('新浪指数日线格式非法')
+    if (typeof row !== 'object' || row === null) throw new Error(t.parse.sinaFormat)
     const record = row as Record<string, unknown>
     const date = typeof record.day === 'string' ? record.day : ''
-    if (!DATE_PATTERN.test(date)) throw new Error('新浪指数日线日期非法')
+    if (!DATE_PATTERN.test(date)) throw new Error(t.parse.sinaDate)
     const previousClose = bars.length > 0 ? bars[bars.length - 1].close : undefined
     bars.push(
       buildBar(
@@ -415,29 +526,34 @@ function barsFromSinaIndex(payload: unknown): Bar[] {
   return normalizeBars(bars)
 }
 
-/** 拉沪深300 日线：腾讯优先，失败换新浪；都失败抛错（由调用方退回宽度）。 */
-export async function fetchIndexBars(fetcher: typeof fetch = fetch): Promise<Bar[]> {
+/**
+ * 拉沪深300 日线：腾讯优先，失败换新浪；都失败抛错（由调用方退回宽度）。
+ * `lang` 只影响抛出的错误文案（默认 zh）。
+ */
+export async function fetchIndexBars(fetcher: typeof fetch = fetch, lang: RegimeLang = 'zh'): Promise<Bar[]> {
+  const t = messagesFor(lang)
   let tencentError: unknown
   try {
-    return barsFromTencentIndex(await requestJson(TENCENT_INDEX_URL, fetcher))
+    return barsFromTencentIndex(await requestJson(TENCENT_INDEX_URL, fetcher), t)
   } catch (error) {
     tencentError = error
   }
   try {
-    return barsFromSinaIndex(await requestJson(SINA_INDEX_URL, fetcher))
+    return barsFromSinaIndex(await requestJson(SINA_INDEX_URL, fetcher), t)
   } catch (error) {
     const message = (value: unknown) => (value instanceof Error ? value.message : String(value))
-    throw new Error(`沪深300 日线获取失败（腾讯：${message(tencentError)}；新浪：${message(error)}）`)
+    throw new Error(t.fetchError(message(tencentError), message(error)))
   }
 }
 
 /* ─────────────────────────────────────────────────────────────
- * localStorage 缓存（版本化；当天不重复拉）
+ * localStorage 缓存（版本化；当天不重复拉；按 lang 区分）
  * ───────────────────────────────────────────────────────────── */
 
 interface RegimeCache {
   version: number
   fetchedOn: string
+  lang?: RegimeLang
   info: RegimeInfo
 }
 
@@ -487,17 +603,18 @@ export function readRegimeCache(now: Date = new Date()): RegimeCache | null {
     if (typeof cache.fetchedOn !== 'string') return null
     if (!isRegimeInfo(cache.info)) return null
     void now
-    return { version: CACHE_VERSION, fetchedOn: cache.fetchedOn, info: cache.info }
+    const lang: RegimeLang | undefined = cache.lang === 'en' ? 'en' : cache.lang === 'zh' ? 'zh' : undefined
+    return { version: CACHE_VERSION, fetchedOn: cache.fetchedOn, lang, info: cache.info }
   } catch {
     return null
   }
 }
 
-function writeRegimeCache(info: RegimeInfo, now: Date): void {
+function writeRegimeCache(info: RegimeInfo, now: Date, lang: RegimeLang): void {
   const storage = getStorage()
   if (!storage) return
   try {
-    const cache: RegimeCache = { version: CACHE_VERSION, fetchedOn: beijingToday(now), info }
+    const cache: RegimeCache = { version: CACHE_VERSION, fetchedOn: beijingToday(now), lang, info }
     storage.setItem(CACHE_KEY, JSON.stringify(cache))
   } catch {
     // 隐私模式/配额不足：静默降级
@@ -523,11 +640,13 @@ export interface LoadRegimeOptions {
   force?: boolean
   fetcher?: typeof fetch
   now?: Date
+  /** 可选文案语言（默认 'zh'）；缓存按 lang 区分，避免中英混用。 */
+  lang?: RegimeLang
 }
 
 export interface RegimeLoadDetail {
   info: RegimeInfo
-  /** 沪深300 拉取失败时的错误文案；成功为 null。 */
+  /** 沪深300 拉取失败时的错误文案（随 lang）；成功为 null。 */
   error: string | null
   fromCache: boolean
 }
@@ -535,7 +654,7 @@ export interface RegimeLoadDetail {
 /**
  * 加载并计算市场状态（供 hook 使用，带失败原因）。
  * 成功：source='index'；沪深300 两条源都失败：退回宽度（source='breadth'）并返回 error。
- * 结果写 localStorage 缓存（版本化，记录 fetchedOn）；当天已成功拉过则直接返回缓存（force 可覆盖）。
+ * 结果写 localStorage 缓存（版本化，记录 fetchedOn + lang）；当天已成功拉过且同语言则直接返回缓存（force 覆盖）。
  */
 export async function loadRegimeDetail(
   watchlistBars: Bar[][],
@@ -543,27 +662,28 @@ export async function loadRegimeDetail(
 ): Promise<RegimeLoadDetail> {
   const now = options.now ?? new Date()
   const fetcher = options.fetcher ?? fetch
+  const lang = options.lang ?? 'zh'
   const cached = readRegimeCache(now)
   const today = beijingToday(now)
 
-  if (!options.force && cached && cached.fetchedOn === today && cached.info.source === 'index') {
+  if (!options.force && cached && cached.fetchedOn === today && cached.info.source === 'index' && (cached.lang ?? 'zh') === lang) {
     return { info: cached.info, error: null, fromCache: true }
   }
 
   let indexBars: Bar[] | undefined
   let error: string | null = null
   try {
-    indexBars = await fetchIndexBars(fetcher)
+    indexBars = await fetchIndexBars(fetcher, lang)
   } catch (fetchError) {
     error = fetchError instanceof Error ? fetchError.message : String(fetchError)
   }
 
-  const info = computeRegime({ indexBars, watchlist: watchlistBars })
-  writeRegimeCache(info, now)
+  const info = computeRegime({ indexBars, watchlist: watchlistBars, lang })
+  writeRegimeCache(info, now, lang)
   return { info, error, fromCache: false }
 }
 
-/** 契约入口：返回 RegimeInfo（失败不抛，退回宽度）。 */
+/** 契约入口：返回 RegimeInfo（失败不抛，退回宽度；lang 控制文案）。 */
 export async function loadRegime(watchlistBars: Bar[][], options: LoadRegimeOptions = {}): Promise<RegimeInfo> {
   return (await loadRegimeDetail(watchlistBars, options)).info
 }

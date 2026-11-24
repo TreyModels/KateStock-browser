@@ -46,10 +46,15 @@ export interface AlertState {
   lastFiredAt: Record<string, number>
 }
 
+/** 语言字面量类型（不 import i18n.ts，避免循环依赖；默认 zh 保证向后兼容）。 */
+export type AlertLang = 'zh' | 'en'
+
 export interface AlertScanOptions {
   now?: Date
   staleMs?: number
   repeatMs?: number
+  /** 可选语言；默认 'zh'（完全向后兼容）。 */
+  lang?: AlertLang
 }
 
 export interface AlertScanResult {
@@ -67,6 +72,12 @@ const KIND_LABELS: Record<AlertKind, string> = {
   stop: '跌破止损',
   target: '触及目标',
   trigger: '触发买点',
+}
+
+const KIND_LABELS_EN: Record<AlertKind, string> = {
+  stop: 'Stop-loss breached',
+  target: 'Target reached',
+  trigger: 'Entry triggered',
 }
 
 export function createAlertState(): AlertState {
@@ -118,16 +129,23 @@ export function isQuoteStale(
   return now.getTime() - updated > maxAgeMs
 }
 
+/**
+ * 提醒文案模板（含价位/现价插值）。
+ * lang 默认 'zh' 完全向后兼容；'en' 输出英文模板。
+ */
 export function alertMessage(
   name: string,
   kind: AlertKind,
   level: number,
   price: number,
+  lang: AlertLang = 'zh',
 ): string {
-  const label = KIND_LABELS[kind]
   const levelText = Number.isFinite(level) ? level.toFixed(2) : '—'
   const priceText = Number.isFinite(price) ? price.toFixed(2) : '—'
-  return `${name} ${label} ${levelText}（现价 ${priceText}）`
+  if (lang === 'en') {
+    return `${name}: ${KIND_LABELS_EN[kind]} at ${levelText} (price ${priceText})`
+  }
+  return `${name} ${KIND_LABELS[kind]} ${levelText}（现价 ${priceText}）`
 }
 
 /** 命中类型对应的策略价位（缺失时退回现价，保证 level 始终有限）。 */
@@ -141,6 +159,7 @@ export function buildAlertEvent(
   quote: LiveQuote,
   kind: AlertKind,
   now: Date = new Date(),
+  lang: AlertLang = 'zh',
 ): AlertEvent {
   const tradeDate = quoteTradeDate(quote)
   const level = alertLevel(strategy, kind, quote.price)
@@ -152,7 +171,7 @@ export function buildAlertEvent(
     level,
     price: quote.price,
     at: now.toISOString(),
-    message: alertMessage(strategy.name, kind, level, quote.price),
+    message: alertMessage(strategy.name, kind, level, quote.price, lang),
   }
 }
 
@@ -255,6 +274,7 @@ export function scanAlerts(
   const nowMs = now.getTime()
   const staleMs = options.staleMs ?? ALERT_STALE_MS
   const repeatMs = options.repeatMs ?? ALERT_REPEAT_MS
+  const lang: AlertLang = options.lang === 'en' ? 'en' : 'zh'
   const today = beijingTradeDate(now)
 
   // 按天裁剪已见集合：跨日（新的 tradeDate 进入 id）自动重置
@@ -275,7 +295,7 @@ export function scanAlerts(
     if (isQuoteStale(quote, now, staleMs)) continue
 
     for (const kind of evaluateLive(strategy, quote).hits) {
-      const event = buildAlertEvent(strategy, quote, kind, now)
+      const event = buildAlertEvent(strategy, quote, kind, now, lang)
       if (seen.has(event.id)) continue
       if (isThrottled({ seenIds: [], lastFiredAt }, strategy.code, kind, now, repeatMs)) continue
       seen.add(event.id)

@@ -374,3 +374,122 @@ test('实测沪深300 指标形态：close 低于 MA20/60/120、回撤 >20% → 
   assert.equal(info.regime, 'bear')
   assert.ok(info.confidence >= 50)
 })
+
+
+/* ─────────────────────────────────────────────────────────────
+ * 7) i18n（task-36）：lang 'en' 只翻译 evidence/error，数值与 zh 完全一致；默认 zh 向后兼容
+ * ───────────────────────────────────────────────────────────── */
+
+const numberTokens = (text) => text.match(/-?\d+(?:\.\d+)?/g) ?? []
+const hasChinese = (text) => /[\u4e00-\u9fff]/.test(text)
+
+test('en：涨/跌/震荡三组的 regime/confidence/asOf/breadthPct 与 zh 完全一致，数值逐条一致', () => {
+  const samples = [
+    { indexBars: INDEX_UPTREND, watchlist: [UP_BARS, UP_BARS, UP_BARS] },
+    { indexBars: INDEX_DOWNTREND, watchlist: [DOWN_BARS, DOWN_BARS, DOWN_BARS] },
+    { indexBars: INDEX_RANGE, watchlist: [DOWN_BARS, DOWN_BARS, DOWN_BARS] },
+  ]
+  for (const sample of samples) {
+    const zh = computeRegime(sample)
+    const en = computeRegime({ ...sample, lang: 'en' })
+    assert.equal(en.regime, zh.regime)
+    assert.equal(en.confidence, zh.confidence)
+    assert.equal(en.asOf, zh.asOf)
+    assert.equal(en.source, zh.source)
+    assert.equal(en.breadthPct, zh.breadthPct)
+    assert.equal(en.evidence.length, zh.evidence.length)
+    for (let index = 0; index < zh.evidence.length; index += 1) {
+      assert.deepEqual(numberTokens(en.evidence[index]), numberTokens(zh.evidence[index]), `line ${index}: ${en.evidence[index]}`)
+      assert.equal(hasChinese(en.evidence[index]), false, `en evidence 不应含中文：${en.evidence[index]}`)
+    }
+  }
+})
+
+test('en：关键句为英文、插值正确（CSI 300 / Score / Bullish / Bearish / Neutral）', () => {
+  const bull = computeRegime({ indexBars: INDEX_UPTREND, watchlist: [UP_BARS, UP_BARS, UP_BARS], lang: 'en' })
+  assert.match(bull.evidence[0], /^CSI 300 close 179\.5 vs MA20 174\.75 \(\+2\.72%\)$/)
+  assert.match(bull.evidence[3], /^MA60 20-day slope 6\.46% \(rising\)$/)
+  assert.match(bull.evidence[4], /^160-day high 179\.5, drawdown 0%$/)
+  assert.match(bull.evidence[5], /^Breadth 100% \(3\/3 closes above MA20, threshold >=60%\)$/)
+  assert.match(bull.evidence[6], /^Score 7\/7 -> Bullish \(bull\); alignment 1, confidence 100$/)
+
+  const bear = computeRegime({ indexBars: INDEX_DOWNTREND, watchlist: [DOWN_BARS, DOWN_BARS, DOWN_BARS], lang: 'en' })
+  assert.match(bear.evidence[6], /Bearish \(bear\)/)
+  assert.match(bear.evidence[3], /\(falling\)/)
+
+  const range = computeRegime({ indexBars: INDEX_RANGE, watchlist: [DOWN_BARS, DOWN_BARS, DOWN_BARS], lang: 'en' })
+  assert.match(range.evidence[6], /Neutral \(range\)/)
+  assert.equal(range.regime, 'range')
+})
+
+test('en：仅宽度模式与无数据兜底说明为英文', () => {
+  const breadth = computeRegime({ watchlist: [UP_BARS, UP_BARS, DOWN_BARS], lang: 'en' })
+  assert.equal(breadth.source, 'breadth')
+  assert.match(breadth.evidence[0], /^CSI 300 daily bars missing or fewer than 120; using breadth only$/)
+  assert.match(breadth.evidence[1], /^Breadth 66\.67% \(2\/3 closes above MA20; thresholds >=60% bull \/ <=40% bear\)$/)
+  assert.match(breadth.evidence[2], /Bullish \(bull\)/)
+  assert.equal(breadth.evidence.some(hasChinese), false)
+
+  const empty = computeRegime({ watchlist: [], lang: 'en' })
+  assert.equal(empty.regime, 'range')
+  assert.deepEqual(empty.evidence, [
+    'CSI 300 daily bars missing or fewer than 120',
+    'Breadth unavailable (no symbol with >=20 daily bars); treated as range',
+  ])
+
+  // 默认 zh 与显式 lang:'zh' 完全一致（向后兼容）
+  assert.deepEqual(computeRegime({ watchlist: [UP_BARS, UP_BARS, DOWN_BARS] }), computeRegime({ watchlist: [UP_BARS, UP_BARS, DOWN_BARS], lang: 'zh' }))
+})
+
+test('en：loadRegime 的错误文案与 evidence 为英文；缓存按 lang 区分', async () => {
+  const storage = mockStorage()
+  const mock = mockFetch((url) =>
+    url.includes('quotes.sina.cn')
+      ? { ok: true, json: async () => sinaIndexPayload(INDEX_UPTREND) }
+      : { ok: false, status: 501 },
+  )
+  try {
+    const watchlist = [UP_BARS, UP_BARS, DOWN_BARS]
+    const zhDetail = await loadRegimeDetail(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW })
+    assert.equal(zhDetail.info.source, 'index')
+    assert.match(zhDetail.info.evidence[0], /沪深300/)
+
+    // 同语言当天命中缓存
+    const zhCached = await loadRegimeDetail(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW })
+    assert.equal(zhCached.fromCache, true)
+
+    // 切到 en：缓存语言不符 → 重新拉取，evidence 英文
+    const enDetail = await loadRegimeDetail(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW, lang: 'en' })
+    assert.equal(enDetail.fromCache, false)
+    assert.equal(enDetail.info.regime, zhDetail.info.regime)
+    assert.equal(enDetail.info.confidence, zhDetail.info.confidence)
+    assert.match(enDetail.info.evidence[0], /^CSI 300 close/)
+    assert.equal(enDetail.info.evidence.some(hasChinese), false)
+    assert.equal(readRegimeCache(FIXED_NOW)?.lang, 'en')
+
+    // 契约入口 loadRegime 同样接受 lang
+    const enInfo = await loadRegime(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW, lang: 'en' })
+    assert.match(enInfo.evidence[0], /^CSI 300 close/)
+  } finally {
+    mock.restore()
+    storage.restore()
+  }
+})
+
+test('en：沪深300 两条源都失败时 error 为英文（zh 仍为中文）', async () => {
+  const storage = mockStorage()
+  const failing = async () => ({ ok: false, status: 503 })
+  try {
+    const watchlist = [DOWN_BARS, DOWN_BARS, UP_BARS]
+    const zhDetail = await loadRegimeDetail(watchlist, { fetcher: failing, now: FIXED_NOW })
+    assert.match(zhDetail.error, /沪深300 日线获取失败/)
+    assert.equal(zhDetail.info.source, 'breadth')
+
+    const enDetail = await loadRegimeDetail(watchlist, { fetcher: failing, now: FIXED_NOW, lang: 'en' })
+    assert.match(enDetail.error, /^CSI 300 daily bars fetch failed \(Tencent: .+; Sina: .+\)$/)
+    assert.equal(enDetail.info.source, 'breadth')
+    assert.match(enDetail.info.evidence[0], /CSI 300 daily bars missing/)
+  } finally {
+    storage.restore()
+  }
+})

@@ -22,6 +22,8 @@ import { LivePrice } from '@/components/live/LivePrice'
 import { MarketStatusBar } from '@/components/live/MarketStatusBar'
 import { StrategyRanking } from '@/components/live/StrategyRanking'
 import { isLivePricePhase } from '@/components/live/quote-utils'
+import { useI18n, localeOf } from '@/lib/i18n'
+import { LanguageToggle } from '@/components/LanguageToggle'
 import { useLiveAlerts } from '@/hooks/useLiveAlerts'
 import { useLiveQuotes } from '@/hooks/useLiveQuotes'
 import { useRegime } from '@/hooks/useRegime'
@@ -48,12 +50,12 @@ const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = 
   { id: 'settings', label: '我的', icon: Settings },
 ]
 
-const statusLabels: Record<StockStatus, string> = { history: '历史记录', holding: '当前持仓', watch: '当前自选' }
-const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const money = (lang: 'zh' | 'en') => new Intl.NumberFormat(localeOf(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 /** 盘中订阅上限：单次批量请求最多 80 只（Lead 裁定 N-5）。 */
 const MAX_LIVE_CODES = 80
 
 function App() {
+  const { lang, t } = useI18n()
   const { data, setData, resetData } = useLocalData()
   const [view, setView] = useState<View>('today')
   const [signalFilter, setSignalFilter] = useState<SignalFilter>('all')
@@ -83,7 +85,7 @@ function App() {
 
   const holdingCount = data.stocks.filter((stock) => stock.status === 'holding').length
   const hasPersonalStocks = data.stocks.length > 0
-  const dateText = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
+  const dateText = new Intl.DateTimeFormat(localeOf(lang), { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
 
   /* ── 盘中层接线：报价代码优先取个人清单，没有清单时取公开快照的代码 ── */
   const [liveAutoRefresh, setLiveAutoRefresh] = useState(true)
@@ -362,22 +364,23 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="desktop-sidebar">
-        <button className="brand" onClick={() => setView('today')} aria-label="返回今日策略">
+        <button className="brand" onClick={() => setView('today')} aria-label={t('nav.today')}>
           <span className="brand-mark"><Activity size={21} /></span>
-          <span><strong>日内</strong><small>A股策略工作台</small></span>
+          <span><strong>{t('app.brand')}</strong><small>{t('app.tagline')}</small></span>
         </button>
-        <nav className="desktop-nav" aria-label="主导航">
-          {views.map(({ id, label, icon: Icon }) => (
-            <button key={id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon size={18} />{label}<ChevronRight size={15} /></button>
+        <nav className="desktop-nav" aria-label={t('nav.today')}>
+          {views.map(({ id, icon: Icon }) => (
+            <button key={id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon size={18} />{t(`nav.${id}`)}<ChevronRight size={15} /></button>
           ))}
         </nav>
-        <div className="sidebar-note"><ShieldCheck size={18} /><p>本地保存<br /><span>不上传持仓，不连接券商</span></p></div>
+        <div className="sidebar-note"><ShieldCheck size={18} /><p>{t('app.privacy1')}<br /><span>{t('app.privacy2')}</span></p></div>
+        <LanguageToggle className="sidebar-lang" />
       </aside>
 
       <div className="main-column">
         <header className="mobile-header">
-          <button className="brand" onClick={() => setView('today')}><span className="brand-mark"><Activity size={19} /></span><strong>日内</strong></button>
-          <button className="icon-button" onClick={openAdd} aria-label="添加股票"><Plus size={21} /></button>
+          <button className="brand" onClick={() => setView('today')}><span className="brand-mark"><Activity size={19} /></span><strong>{t('app.brand')}</strong></button>
+          <button className="icon-button" onClick={openAdd} aria-label={t('app.addStock')}><Plus size={21} /></button>
         </header>
 
         <main className="page-content">
@@ -405,19 +408,19 @@ function App() {
                 onSelect={selectRankingAction}
                 onScrollToList={scrollToStrategyList}
               />
-              {data.goldValueCny !== undefined && <section className="report-status"><strong>黄金产品 · 手动参考价值</strong><p>¥{money.format(data.goldValueCny)} · 非实时；未确认产品代码</p></section>}
+              {data.goldValueCny !== undefined && <section className="report-status"><strong>{t('today.goldTitle')}</strong><p>{t('today.goldNote', { value: `¥${money(lang).format(data.goldValueCny)}` })}</p></section>}
               <ReportStatus report={report} loading={reportLoading} cached={reportCached} error={reportError} onRetry={() => void loadReport()} />
               {!hasPersonalStocks && (
                 <section className="private-import-card" aria-labelledby="private-import-title">
                   <span className="section-kicker">PRIVATE PORTFOLIO</span>
-                  <h2 id="private-import-title">导入你的持仓清单（只存本机，不上传）</h2>
-                  <p className="private-import-note">文件含私人财务信息，勿提交到 GitHub；导入后只保存在当前浏览器。</p>
+                  <h2 id="private-import-title">{t('private.title')}</h2>
+                  <p className="private-import-note">{t('private.note')}</p>
                   <div className="private-import-actions">
                     <button type="button" className="button-primary" onClick={() => portfolioImportRef.current?.click()}>
-                      <Upload size={17} aria-hidden="true" />导入清单文件
+                      <Upload size={17} aria-hidden="true" />{t('private.import')}
                     </button>
                     <button type="button" className="button-secondary" onClick={() => void downloadTemplate()}>
-                      <FileDown size={17} aria-hidden="true" />下载模板
+                      <FileDown size={17} aria-hidden="true" />{t('private.download')}
                     </button>
                   </div>
                   <input
@@ -437,30 +440,30 @@ function App() {
               <ResearchSettings />
               <section className="briefing-panel">
                 <div className="briefing-copy">
-                  <div className="briefing-meta"><span>DAILY PLAYBOOK</span><span>{dateText}</span></div>
-                  <h1>先处理风险，<br />再寻找突破。</h1>
-                  <p>短线积极模式 · 日线信号 · 条件单思维</p>
+                  <div className="briefing-meta"><span>{t('today.briefingKicker')}</span><span>{dateText}</span></div>
+                  <h1>{t('today.briefingTitle1')}<br />{t('today.briefingTitle2')}</h1>
+                  <p>{t('today.briefingSub')}</p>
                   <button className="briefing-button" onClick={() => void refreshCodes()} disabled={refreshing}>
                     <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
-                    {refreshing ? `更新中 ${progress[0]}/${progress[1]}` : '更新日线策略'}
+                    {refreshing ? t('today.updating', { done: progress[0], total: progress[1] }) : t('today.updateDaily')}
                   </button>
                 </div>
                 <div className="briefing-stats">
-                  <div><strong>{buyCount}</strong><span>关注机会</span></div>
-                  <div><strong>{riskCount}</strong><span>风险信号</span></div>
-                  <div><strong>{holdingCount}</strong><span>当前持仓</span></div>
-                  <div><strong>{displayStrategies.length}<small>/{data.stocks.length}</small></strong><span>已生成策略</span></div>
+                  <div><strong>{buyCount}</strong><span>{t('today.stat.buy')}</span></div>
+                  <div><strong>{riskCount}</strong><span>{t('today.stat.risk')}</span></div>
+                  <div><strong>{holdingCount}</strong><span>{t('today.stat.holding')}</span></div>
+                  <div><strong>{displayStrategies.length}<small>/{data.stocks.length}</small></strong><span>{t('today.stat.strategies')}</span></div>
                 </div>
               </section>
 
               <div className="today-grid">
                 <section ref={strategyListRef}>
                   <div className="section-heading">
-                    <div><span className="section-kicker">TODAY'S SIGNALS</span><h2>今日优先清单{hasPersonalStocks && <span className="privacy-badge">本地保存 · 不上传</span>}</h2></div>
+                    <div><span className="section-kicker">TODAY'S SIGNALS</span><h2>{t('today.signalsTitle')}{hasPersonalStocks && <span className="privacy-badge">{t('today.privacyBadge')}</span>}</h2></div>
                     <span className="data-stamp">{liveLoading ? <LoaderCircle size={15} className="spin" /> : isLivePricePhase(phase) && liveSuccessCount ? <Activity size={15} /> : <Database size={15} />}{isLivePricePhase(phase) && liveSuccessCount ? `盘中 ${liveSuccessCount} 只${liveFailedCodes.length ? ` · 未刷新 ${liveFailedCodes.length}` : ''}` : displayStrategies.length ? '策略已计算' : '等待行情'}</span>
                   </div>
                   <div className="filter-tabs" role="tablist" aria-label="策略信号筛选">
-                    {([['all', '全部'], ['buy', '机会'], ['risk', '风险'], ['wait', '等待']] as Array<[SignalFilter, string]>).map(([id, label]) => (
+                    {([['all', t('today.filter.all')], ['buy', t('today.filter.buy')], ['risk', t('today.filter.risk')], ['wait', t('today.filter.wait')]] as Array<[SignalFilter, string]>).map(([id, label]) => (
                       <button key={id} role="tab" aria-selected={signalFilter === id} className={signalFilter === id ? 'active' : ''} onClick={() => { setSignalFilter(id); setRankingSelection(null) }}>{label}</button>
                     ))}
                   </div>
@@ -472,9 +475,9 @@ function App() {
                   ) : (
                     <div className="empty-state">
                       <Gauge size={30} />
-                      <h3>{displayStrategies.length ? '当前筛选下没有信号' : '还没有生成策略'}</h3>
-                      <p>{displayStrategies.length ? '切换筛选查看其他股票。' : '刷新行情，或在股票页手动录入现价与指标。'}</p>
-                      <button className="button-primary" onClick={() => displayStrategies.length ? setSignalFilter('all') : void refreshCodes()}>{displayStrategies.length ? '查看全部' : '获取行情'}</button>
+                      <h3>{displayStrategies.length ? t('today.emptyFiltered') : t('today.emptyAll')}</h3>
+                      <p>{displayStrategies.length ? t('today.emptyHintFiltered') : t('today.emptyHintAll')}</p>
+                      <button className="button-primary" onClick={() => displayStrategies.length ? setSignalFilter('all') : void refreshCodes()}>{displayStrategies.length ? t('common.viewAll') : t('common.getQuotes')}</button>
                     </div>
                   )}
                 </section>
@@ -482,21 +485,21 @@ function App() {
                 <aside className="right-rail">
                   <LiveAlertsPanel alerts={alerts} dismiss={dismiss} clear={clear} permission={permission} requestPermission={requestPermission} soundEnabled={soundEnabled} toggleSound={toggleSound} phase={phase} strategyCount={strategies.length} holdingByCode={holdingByCode} />
                   <section className="discipline-panel">
-                    <div className="section-heading compact"><div><span className="section-kicker">RISK FIRST</span><h2>盘前纪律</h2></div><ShieldCheck size={21} /></div>
+                    <div className="section-heading compact"><div><span className="section-kicker">{t('today.disciplineKicker')}</span><h2>{t('today.disciplineTitle')}</h2></div><ShieldCheck size={21} /></div>
                     <ul className="rule-list">
-                      <li><span>01</span>开盘急涨不追，等待触发价确认</li>
-                      <li><span>02</span>先设保护位，再计算买入股数</li>
-                      <li><span>03</span>触及止损条件，不用补仓摊薄替代</li>
+                      <li><span>01</span>{t('today.discipline1')}</li>
+                      <li><span>02</span>{t('today.discipline2')}</li>
+                      <li><span>03</span>{t('today.discipline3')}</li>
                     </ul>
                   </section>
                   <section className="risk-panel">
-                    <div className="section-heading compact"><div><span className="section-kicker">POSITION SIZING</span><h2>风险预算</h2></div></div>
-                    <div className="risk-number"><strong>{data.settings.riskPct.toFixed(1)}%</strong><span>单笔风险 / ¥{Math.round(data.settings.capital * data.settings.riskPct / 100).toLocaleString('zh-CN')}</span></div>
-                    <input aria-label="单笔风险百分比" type="range" min="0.2" max="2" step="0.1" value={data.settings.riskPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, riskPct: Number(event.target.value) } }))} />
-                    <div className="flex justify-between text-xs text-muted-foreground"><span>账户 ¥{data.settings.capital.toLocaleString('zh-CN')}</span><span>单票上限 {data.settings.maxPositionPct}%</span></div>
-                    <button className="text-button" onClick={() => setView('settings')}>调整风险参数 <ArrowUpRight size={14} /></button>
+                    <div className="section-heading compact"><div><span className="section-kicker">{t('today.riskKicker')}</span><h2>{t('today.riskTitle')}</h2></div></div>
+                    <div className="risk-number"><strong>{data.settings.riskPct.toFixed(1)}%</strong><span>{t('today.riskPerTrade')} / ¥{Math.round(data.settings.capital * data.settings.riskPct / 100).toLocaleString('zh-CN')}</span></div>
+                    <input aria-label={t('today.riskSliderAria')} type="range" min="0.2" max="2" step="0.1" value={data.settings.riskPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, riskPct: Number(event.target.value) } }))} />
+                    <div className="flex justify-between text-xs text-muted-foreground"><span>{t('today.account', { value: `¥${data.settings.capital.toLocaleString(localeOf(lang))}` })}</span><span>{t('today.maxPosition', { pct: data.settings.maxPositionPct })}</span></div>
+                    <button className="text-button" onClick={() => setView('settings')}>{t('today.adjustRisk')} <ArrowUpRight size={14} /></button>
                   </section>
-                  <p className="source-note">盘中报价来自公开行情接口，可能延迟或中断；收盘后显示收盘价。策略与提醒仅为规则化研究参考，不构成投资建议。</p>
+                  <p className="source-note">{t('today.sourceNote')}</p>
                 </aside>
               </div>
             </>
@@ -505,8 +508,8 @@ function App() {
           {view === 'stocks' && (
             <section className="standard-page">
               <div className="page-heading">
-                <div><span className="section-kicker">MY UNIVERSE</span><h1>我的股票{hasPersonalStocks && <span className="privacy-badge">本地保存 · 不上传</span>}</h1><p>持仓、自选与历史记录分开管理。</p></div>
-                <button className="button-primary desktop-action" onClick={openAdd}><Plus size={17} />添加股票</button>
+                <div><span className="section-kicker">MY UNIVERSE</span><h1>{t('stocks.title')}{hasPersonalStocks && <span className="privacy-badge">{t('today.privacyBadge')}</span>}</h1><p>{t('stocks.sub')}</p></div>
+                <button className="button-primary desktop-action" onClick={openAdd}><Plus size={17} />{t('stocks.add')}</button>
               </div>
               <MarketStatusBar
                 phase={phase}
@@ -524,13 +527,13 @@ function App() {
                 compact
               />
               <div className="stock-toolbar">
-                <label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或代码" aria-label="搜索股票" /></label>
+                <label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('stocks.search')} aria-label={t('stocks.search')} /></label>
                 <select value={stockFilter} onChange={(event) => setStockFilter(event.target.value as 'all' | StockStatus)} aria-label="筛选清单类型">
-                  <option value="all">全部清单</option><option value="holding">当前持仓</option><option value="watch">当前自选</option><option value="history">历史记录</option>
+                  <option value="all">{t('stocks.filter.all')}</option><option value="holding">{t('stocks.filter.holding')}</option><option value="watch">{t('stocks.filter.watch')}</option><option value="history">{t('stocks.filter.history')}</option>
                 </select>
                 <button className="button-secondary" onClick={() => void refreshCodes()} disabled={refreshing}><RefreshCw size={16} className={refreshing ? 'spin' : ''} />更新</button>
               </div>
-              <div className="list-caption"><span>{filteredStocks.length} 条记录 · {isLivePricePhase(phase) ? `盘中订阅 ${liveCodes.length} 只 · 成功 ${liveSuccessCount} / 失败 ${liveFailedCodes.length}` : '非交易时段：显示收盘或上次报价'}</span><span>个人记录仅保存在当前设备</span></div>
+              <div className="list-caption"><span>{t('stocks.records', { n: filteredStocks.length })} · {isLivePricePhase(phase) ? t('stocks.liveScope', { n: liveCodes.length, ok: liveSuccessCount, fail: liveFailedCodes.length }) : t('stocks.offHours')}</span><span>{t('stocks.privacy')}</span></div>
               <div className="stock-list">
                 {filteredStocks.map((stock) => {
                   const quote = data.quotes[stock.code]
@@ -542,7 +545,7 @@ function App() {
                     <article className="stock-row" key={stock.id}>
                       <button className="stock-identity" onClick={() => openEdit(stock)}>
                         <span className="stock-name">{stock.name}</span><span className="code-label">{stock.code}</span>
-                        <span className={`status-tag status-${stock.status}`}>{statusLabels[stock.status]}</span>
+                        <span className={`status-tag status-${stock.status}`}>{t(`stocks.status.${stock.status}`)}</span>
                       </button>
                       <div className="stock-quote">
                         {displayPrice !== undefined && displayChangePct !== undefined
@@ -550,7 +553,7 @@ function App() {
                           : <span className="text-muted-foreground">等待行情</span>}
                       </div>
                       <div className="stock-pnl">
-                        <span>2026 收益额</span><strong className={`number-text ${(stock.annualPnl ?? 0) >= 0 ? 'market-up' : 'market-down'}`}>{stock.annualPnl === undefined ? '—' : `${stock.annualPnl >= 0 ? '+' : '−'}${money.format(Math.abs(stock.annualPnl))}`}</strong>
+                        <span>{t('stocks.pnl', { year: 2026 })}</span><strong className={`number-text ${(stock.annualPnl ?? 0) >= 0 ? 'market-up' : 'market-down'}`}>{stock.annualPnl === undefined ? '—' : `${stock.annualPnl >= 0 ? '+' : '−'}${money(lang).format(Math.abs(stock.annualPnl))}`}</strong>
                       </div>
                       <div className="stock-actions">
                         {quote && <button className="text-button" onClick={() => setSelectedCode(stock.code)}>策略 <ArrowUpRight size={14} /></button>}
@@ -561,7 +564,7 @@ function App() {
                   )
                 })}
               </div>
-              {!filteredStocks.length && <div className="empty-state"><Search size={28} /><h3>没有匹配的股票</h3><p>更换关键词或清单筛选。</p></div>}
+              {!filteredStocks.length && <div className="empty-state"><Search size={28} /><h3>{t('stocks.empty')}</h3><p>{t('stocks.emptyHint')}</p></div>}
             </section>
           )}
 
@@ -584,45 +587,46 @@ function App() {
 
           {view === 'settings' && (
             <section className="standard-page settings-page">
-              <div className="page-heading"><div><span className="section-kicker">YOUR WORKSPACE</span><h1>我的设置</h1><p>修改后立即重算策略，并自动保存在当前浏览器。</p></div></div>
+              <div className="page-heading"><div><span className="section-kicker">YOUR WORKSPACE</span><h1>{t('settings.title')}</h1><p>{t('settings.sub')}</p>
+                <LanguageToggle className="settings-lang" /></div></div>
               <div className="settings-grid">
                 <section>
-                  <div className="settings-section-title"><Gauge size={19} /><h2>风险参数</h2></div>
+                  <div className="settings-section-title"><Gauge size={19} /><h2>{t('settings.riskTitle')}</h2></div>
                   <div className="settings-fields">
-                    <label className="form-field">账户参考本金（元）<input type="number" min="1000" step="1000" value={data.settings.capital} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, capital: Math.max(1000, Number(event.target.value)) } }))} /></label>
-                    <label className="form-field">单笔风险（%）<input type="number" min="0.2" max="2" step="0.1" value={data.settings.riskPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, riskPct: Math.min(2, Math.max(0.2, Number(event.target.value))) } }))} /></label>
-                    <label className="form-field">单票仓位上限（%）<input type="number" min="1" max="50" step="1" value={data.settings.maxPositionPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, maxPositionPct: Math.min(50, Math.max(1, Number(event.target.value))) } }))} /></label>
+                    <label className="form-field">{t('settings.capital')}<input type="number" min="1000" step="1000" value={data.settings.capital} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, capital: Math.max(1000, Number(event.target.value)) } }))} /></label>
+                    <label className="form-field">{t('settings.riskPct')}<input type="number" min="0.2" max="2" step="0.1" value={data.settings.riskPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, riskPct: Math.min(2, Math.max(0.2, Number(event.target.value))) } }))} /></label>
+                    <label className="form-field">{t('settings.maxPosition')}<input type="number" min="1" max="50" step="1" value={data.settings.maxPositionPct} onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, maxPositionPct: Math.min(50, Math.max(1, Number(event.target.value))) } }))} /></label>
                   </div>
                   <p className="settings-note">打开应用时读取已发布的公共快照；交易时段会按公开接口轮询盘中报价，收盘后显示收盘价。自动刷新可在今日页状态条关闭。</p>
                 </section>
                 <section>
-                  <div className="settings-section-title"><Smartphone size={19} /><h2>在 iPhone / iPad 上使用</h2></div>
-                  <ol className="install-steps"><li><span>1</span>用 Safari 打开本应用</li><li><span>2</span>点击“分享”按钮</li><li><span>3</span>选择“添加到主屏幕”</li></ol>
-                  <p className="settings-note">数据只保存在当前浏览器。清除网站数据会删除清单；换设备前请先导出备份。</p>
+                  <div className="settings-section-title"><Smartphone size={19} /><h2>{t('settings.iphoneTitle')}</h2></div>
+                  <ol className="install-steps"><li><span>1</span>{t('settings.iphone1')}</li><li><span>2</span>{t('settings.iphone2')}</li><li><span>3</span>{t('settings.iphone3')}</li></ol>
+                  <p className="settings-note">{t('settings.iphoneNote')}</p>
                 </section>
                 <section>
-                  <div className="settings-section-title"><Database size={19} /><h2>数据与备份</h2></div>
-                  <label className="form-field">非实物黄金参考价值（元，可选）<input type="number" inputMode="decimal" min="0" value={data.goldValueCny ?? ''} onChange={(event) => { const value = event.target.value; setData(current => ({ ...current, goldValueCny: value === '' ? undefined : Math.max(0, Number(value)) })) }} /></label>
-                  <p className="settings-note">手动输入，仅保存在本设备；不是实时价格。确认具体产品后才能自动更新。</p>
+                  <div className="settings-section-title"><Database size={19} /><h2>{t('settings.dataTitle')}</h2></div>
+                  <label className="form-field">{t('settings.goldLabel')}<input type="number" inputMode="decimal" min="0" value={data.goldValueCny ?? ''} onChange={(event) => { const value = event.target.value; setData(current => ({ ...current, goldValueCny: value === '' ? undefined : Math.max(0, Number(value)) })) }} /></label>
+                  <p className="settings-note">{t('settings.goldNote')}</p>
                   <div className="data-actions">
-                    <button className="button-secondary" onClick={exportData}><ArrowDownToLine size={17} />导出完整备份</button>
-                    <button className="button-secondary" onClick={() => { const url = URL.createObjectURL(new Blob([portfolioMarkdown(data)], { type: 'text/markdown;charset=utf-8' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'stocks.md'; document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }}><ArrowDownToLine size={17} />导出 Markdown 清单</button>
-                    <button className="button-secondary" onClick={() => void downloadTemplate()}><FileDown size={17} />下载清单模板</button>
-                    <button className="button-secondary" onClick={() => fileRef.current?.click()}><Upload size={17} />导入备份</button>
-                    <button className="button-secondary" onClick={() => zipRef.current?.click()}><Upload size={17} />导入清单文件</button>
+                    <button className="button-secondary" onClick={exportData}><ArrowDownToLine size={17} />{t('settings.exportBackup')}</button>
+                    <button className="button-secondary" onClick={() => { const url = URL.createObjectURL(new Blob([portfolioMarkdown(data)], { type: 'text/markdown;charset=utf-8' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'stocks.md'; document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }}><ArrowDownToLine size={17} />{t('settings.exportMarkdown')}</button>
+                    <button className="button-secondary" onClick={() => void downloadTemplate()}><FileDown size={17} />{t('settings.downloadTemplate')}</button>
+                    <button className="button-secondary" onClick={() => fileRef.current?.click()}><Upload size={17} />{t('settings.importBackup')}</button>
+                    <button className="button-secondary" onClick={() => zipRef.current?.click()}><Upload size={17} />{t('settings.importFile')}</button>
                     <input ref={zipRef} type="file" accept=".zip,.json,.md,.txt,text/plain,text/markdown,application/json,application/zip" className="hidden" onChange={(event) => void importPortfolio(event.target.files?.[0])} />
                     <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => void importData(event.target.files?.[0])} />
                   </div>
                   <p className="settings-note">JSON 备份导入会替换当前数据，请先导出。清单支持 JSON、Markdown、文本或 ZIP（内含 stocks.json / stocks.md / stocks.txt），只添加新股票，已有记录和黄金价值不会覆盖。ZIP 中的其他文件（包括密钥）会被忽略。Markdown 包含私人财务信息，请妥善保存。定时 AI 密钥须在 GitHub Actions 机密中单独设置。清理浏览器数据前先导出备份。</p>
-                  <button className="text-button danger-text" onClick={() => setResetOpen(true)}><History size={15} />清空当前设备数据</button>
+                  <button className="text-button danger-text" onClick={() => setResetOpen(true)}><History size={15} />{t('settings.clearData')}</button>
                 </section>
               </div>
             </section>
           )}
         </main>
 
-        <nav className="bottom-nav" aria-label="移动端主导航">
-          {views.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon size={21} /><span>{label}</span></button>)}
+        <nav className="bottom-nav" aria-label={t('nav.today')}>
+          {views.map(({ id, icon: Icon }) => <button key={id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon size={21} /><span>{t(`nav.${id}`)}</span></button>)}
         </nav>
       </div>
 
@@ -632,7 +636,7 @@ function App() {
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>移除{deleteStock?.name}？</AlertDialogTitle><AlertDialogDescription>该股票及其本地行情缓存会被移除，此操作可通过备份恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground">确认移除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>清空当前设备数据？</AlertDialogTitle><AlertDialogDescription>当前清单、行情缓存与设置会被清空。建议先导出备份，之后可以重新导入。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={() => { resetData(); setResetOpen(false); toast.success('已清空当前设备数据') }}>确认清空</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('settings.clearData')}？</AlertDialogTitle><AlertDialogDescription>当前清单、行情缓存与设置会被清空。建议先导出备份，之后可以重新导入。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={() => { resetData(); setResetOpen(false); toast.success(t('settings.clearData')) }}>确认清空</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
       <Toaster position="top-center" richColors closeButton />
     </div>

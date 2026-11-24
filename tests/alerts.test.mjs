@@ -4,6 +4,7 @@ import {
   ALERT_REPEAT_MS,
   ALERT_STALE_MS,
   ALERT_STORAGE_KEY,
+  alertMessage,
   beijingTradeDate,
   buildAlertEvent,
   canNotify,
@@ -515,4 +516,63 @@ test('读取 Notification 权限并判断是否可通知', () => {
     assert.equal(notificationPermission(scope), value)
     assert.equal(canNotify(value), value === 'granted')
   }
+})
+
+/* ── i18n：默认 zh 兼容 + en 文案 ───────────────────────────── */
+
+const HAS_CJK = /[\u4e00-\u9fa5]/
+const hasCjk = (value) => HAS_CJK.test(String(value))
+
+test('i18n：alertMessage 默认 zh 不变，en 模板英文且插值正确', () => {
+  // 默认（以及显式 zh）保持原有中文模板
+  assert.equal(alertMessage('测试股份', 'trigger', 10, 10.5), '测试股份 触发买点 10.00（现价 10.50）')
+  assert.equal(alertMessage('测试股份', 'stop', 9, 8.8), '测试股份 跌破止损 9.00（现价 8.80）')
+  assert.equal(
+    alertMessage('测试股份', 'trigger', 10, 10.5),
+    alertMessage('测试股份', 'trigger', 10, 10.5, 'zh'),
+  )
+
+  assert.equal(alertMessage('Test Co', 'trigger', 10, 10.5, 'en'), 'Test Co: Entry triggered at 10.00 (price 10.50)')
+  assert.equal(alertMessage('Test Co', 'stop', 9, 8.8, 'en'), 'Test Co: Stop-loss breached at 9.00 (price 8.80)')
+  assert.equal(alertMessage('Test Co', 'target', 12, 12.05, 'en'), 'Test Co: Target reached at 12.00 (price 12.05)')
+  // 插值异常输入沿用 '—'
+  assert.equal(alertMessage('Test Co', 'trigger', Number.NaN, Number.NaN, 'en'), 'Test Co: Entry triggered at — (price —)')
+  for (const kind of ['trigger', 'stop', 'target']) {
+    assert.equal(hasCjk(alertMessage('Test Co', kind, 10, 10.5, 'en')), false)
+  }
+})
+
+test('i18n：buildAlertEvent en message 英文，id/level/price 与 zh 一致', () => {
+  const zhEvent = buildAlertEvent(makeStrategy(), makeQuote({ price: 8.8 }), 'stop', NOW)
+  const enEvent = buildAlertEvent(makeStrategy(), makeQuote({ price: 8.8 }), 'stop', NOW, 'en')
+  const defaultValue = buildAlertEvent(makeStrategy(), makeQuote({ price: 8.8 }), 'stop', NOW, 'zh')
+
+  assert.deepEqual(defaultValue, zhEvent, '默认 lang 与显式 zh 完全一致')
+  assert.equal(enEvent.id, zhEvent.id)
+  assert.equal(enEvent.level, zhEvent.level)
+  assert.equal(enEvent.price, zhEvent.price)
+  assert.equal(enEvent.kind, zhEvent.kind)
+  assert.equal(enEvent.message, '测试股份: Stop-loss breached at 9.00 (price 8.80)')
+  assert.equal(hasCjk(enEvent.message.replace('测试股份', '')), false)
+})
+
+test('i18n：scanAlerts 的 lang 透传到 AlertEvent.message（默认 zh 不变）', () => {
+  const strategies = [makeStrategy()]
+  const quotes = quotesOf(makeQuote())
+
+  const en = scanAlerts(strategies, quotes, createAlertState(), { now: NOW, lang: 'en' })
+  assert.equal(en.events.length, 1)
+  assert.match(en.events[0].message, /Entry triggered at 10\.00 \(price 10\.50\)/)
+
+  const zh = scanAlerts(strategies, quotes, createAlertState(), { now: NOW })
+  assert.match(zh.events[0].message, /触发买点/)
+  assert.equal(
+    JSON.stringify(scanAlerts(strategies, quotes, createAlertState(), { now: NOW, lang: 'zh' })),
+    JSON.stringify(zh),
+    '显式 zh 与默认完全一致',
+  )
+
+  // 英文模式不影响去重 id / 当天一次语义
+  const again = scanAlerts(strategies, quotes, en.state, { now: NOW, lang: 'en' })
+  assert.deepEqual(again.events, [])
 })
