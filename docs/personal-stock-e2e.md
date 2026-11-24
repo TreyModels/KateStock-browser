@@ -1,6 +1,6 @@
 # 浏览器 E2E：添加非公开股票 → 日线获取（东财主源/腾讯/新浪回退）→ 策略价位
 
-- 运行时间：2026-11-24T01:41:11.536Z → 2026-11-24T01:41:14.242Z（Asia/Shanghai）
+- 运行时间：2026-11-24T01:46:22.725Z → 2026-11-24T01:46:25.949Z（Asia/Shanghai）
 - 页面：http://localhost:3000；股票：600000
 - 结论：**PASS**
 
@@ -17,17 +17,17 @@
 - 进入股票页：成功
 - 页面交互添加股票：600000 浦发银行（status=当前自选）
 - 点击「更新」：触发 fetchQuotes（东财 → JSONP → 腾讯 kline）
-- 拿到日线：{"code":"600000","price":10.67,"tradeDate":"2026-11-24","bars":160,"firstDate":"2026-03-31","lastDate":"2026-11-24","provider":"Tencent kline (qfq)","adjustment":"前复权","source":"auto"}
+- 拿到日线：{"code":"600000","price":10.71,"tradeDate":"2026-11-24","bars":160,"firstDate":"2026-03-31","lastDate":"2026-11-24","provider":"Tencent kline (qfq)","adjustment":"前复权","source":"auto"}
 
 ## 断言
 
 | 断言 | 结果 | 证据 |
 | --- | --- | --- |
-| 股票行出现价格 | ✅ PASS | 浦发银行 600000 当前自选 10.67 -0.74% 收盘 2026 收益额 — 策略 |
-| 详情价位至少一个非「—」 | ✅ PASS | [{"label":"触发价","value":"10.74"},{"label":"保护位","value":"10.27"},{"label":"目标位","value":"11.18"}] |
+| 股票行出现价格 | ✅ PASS | 浦发银行 600000 当前自选 10.71 -0.37% 收盘 2026 收益额 — 策略 |
+| 详情价位至少一个非「—」 | ✅ PASS | [{"label":"触发价","value":"10.75"},{"label":"保护位","value":"10.27"},{"label":"目标位","value":"11.19"}] |
 | 详情包含触发/保护/目标三项 | ✅ PASS | 触发价 / 保护位 / 目标位 |
-| 今日页出现该股票策略卡 | ✅ PASS | 浦发银行 600000 10.67 -0.74% 收盘 回踩低吸 强度 74 上升趋势仍在，价格回到短期均线区域，等待止跌后介入。 触发 10.74 距触发 +0.7% 保护 10.27 距保护 +3.9% 目标 11.18 距目标 +4.8% 参考上限 2200 股 完整计划 自动日线 · 2026-11-24 |
-| 策略卡有价格且至少一个价位 | ✅ PASS | 价格型数值 5 个：10.67 / 0.74 / 10.74 / 10.27 / 11.18；浦发银行 600000 10.67 -0.74% 收盘 回踩低吸 强度 74 上升趋势仍在，价格回到短期均线区域，等待止跌后介入。 触发 10.74 距触发 +0.7% 保护 10.27 距保护 +3.9% 目标 11.18 距目标 +4.8% 参考上限 2200 股 完整计划 自动日线 · 2026-11-24 |
+| 今日页出现该股票策略卡 | ✅ PASS | 浦发银行 600000 10.71 -0.37% 收盘 回踩低吸 强度 74 上升趋势仍在，价格回到短期均线区域，等待止跌后介入。 触发 10.75 距触发 +0.4% 保护 10.27 距保护 +4.3% 目标 11.19 距目标 +4.5% 参考上限 2200 股 完整计划 自动日线 · 2026-11-24 |
+| 策略卡有价格且至少一个价位 | ✅ PASS | 价格型数值 5 个：10.71 / 0.37 / 10.75 / 10.27 / 11.19；浦发银行 600000 10.71 -0.37% 收盘 回踩低吸 强度 74 上升趋势仍在，价格回到短期均线区域，等待止跌后介入。 触发 10.75 距触发 +0.4% 保护 10.27 距保护 +4.3% 目标 11.19 距目标 +4.5% 参考上限 2200 股 完整计划 自动日线 · 2026-11-24 |
 | 东财 push2his 有请求（成功或失败均可，按实际记录） | ✅ PASS | attempts=4，成功(klines)=0，失败=4 |
 | 日线数据获取成功（东财主源 或 腾讯/新浪回退） | ✅ PASS | 东财主源成功=false；腾讯成功=2（501=0，尝试=2）；新浪成功=0 |
 | 数据来源可识别 | ✅ PASS | Tencent kline（腾讯回退） |
@@ -39,9 +39,9 @@
 
 - push2his（东财）记录 4 条：
   - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101","error":"net::ERR_EMPTY_RESPONSE"}
-  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795484472896_t18wwq8pmr","error":"net::ERR_EMPTY_RESPONSE"}
+  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795484784450_wk20wzzoj5b","error":"net::ERR_EMPTY_RESPONSE"}
   - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101","error":"net::ERR_EMPTY_RESPONSE"}
-  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795484473188_am8ye9w8txv","error":"net::ERR_EMPTY_RESPONSE"}
+  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795484784928_7ox4spjdv66","error":"net::ERR_EMPTY_RESPONSE"}
 - 腾讯 fqkline 记录 2 条（501 为 WAF 挑战页，属数据源侧限制）：
   - {"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}
   - {"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}

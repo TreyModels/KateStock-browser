@@ -248,6 +248,13 @@ elif [ "${MARKET_RESULT}" = "PENDING" ]; then
 else
   RC_CONCLUSION="**自动化通过（盘中实弹本次 SKIP）**：可作为发布候选；真实盘中实弹需在 09:15–11:30 / 13:00–15:00 重跑，移动端真机/生产 SW 仍待人工。"
 fi
+MARKET_NOTE=""
+case "${MARKET_RESULT}" in
+    PASS) MARKET_NOTE="本次已在交易窗口实跑 **PASS**（硬断言+告警链路+自然触发均通过，详见 docs/market-window-report.md）" ;;
+    PENDING) MARKET_NOTE="本次已实跑 **PENDING**（硬断言+告警链路 PASS，窗口内未自然触发提醒，按约定不判失败）" ;;
+    FAIL) MARKET_NOTE="本次实跑 **FAIL**（见 docs/market-window-report.md）" ;;
+    *) MARKET_NOTE="本次因非交易时段 SKIP" ;;
+  esac
 MARKET_LINE="本次 market-window:"
 if [ "${IS_TRADING}" = "1" ]; then
   if [ "${PENDING_COUNT}" -gt 0 ]; then MARKET_LINE="${MARKET_LINE} PENDING（待盘中）"; else MARKET_LINE="${MARKET_LINE} 已运行"; fi
@@ -294,19 +301,13 @@ fi
   echo "## 已知风险"
   echo ""
   echo "1. **数据源复权口径混用**：东财/腾讯日线为**前复权**；新浪日线回退（2026-11-24 因腾讯 fqkline 501 WAF 新增的第四级）为**不复权**（\`Quote.adjustment\` 已标注 \`不复权（tushare 未验证）\`）。个人清单若混源，同一页面不同股票的均线/ATR/RSI 口径可能不一致，策略价位不可跨数据源直接比较；重要决策前请核对数据来源，生产优先东财/腾讯前复权。"
-  echo "2. **数据可用性依赖多级回退**：本机东财 push2 反爬、腾讯 fqkline 返回 501 WAF，个股日线目前依赖新浪 JSONP；若新浪也不可用，该股日线会失败并走手动行情，不会伪造数据。"
-  echo "3. **盘中数据与提醒**：本次非交易时段跑，market-window SKIP；盘中价格更新/告警链路/通知声音尚未在交易时段实弹验证。"
+  echo "2. **数据可用性依赖多级回退**：本机东财 push2 时通/时被反爬、腾讯 fqkline 时通/时返回 501 WAF；个股日线依赖「东财 → 腾讯 → 新浪」多级回退。若全部不可用，该股日线会失败并走手动行情，不会伪造数据。"
+  echo "3. **盘中数据与提醒**：盘中价格更新/告警链路实弹：${MARKET_NOTE}；通知/声音未在本脚本断言；跨交易日/不同行情形态仍需持续观察。"
   echo "4. **移动端真机 / 生产部署**：iOS Safari 安全区/触控/通知、生产 Service Worker/Pages 缓存（data/latest.json）仍未验证。"
   echo ""
   echo "## 已知未验证项（人工/盘中/部署）"
   echo ""
-  case "${MARKET_RESULT}" in
-    PASS) MARKET_NOTE="本次已在交易窗口实跑 **PASS**（硬断言+告警链路+自然触发均通过，详见 docs/market-window-report.md）" ;;
-    PENDING) MARKET_NOTE="本次已实跑 **PENDING**（硬断言+告警链路 PASS，窗口内未自然触发提醒，按约定不判失败）" ;;
-    FAIL) MARKET_NOTE="本次实跑 **FAIL**（见 docs/market-window-report.md）" ;;
-    *) MARKET_NOTE="本次因非交易时段 SKIP" ;;
-  esac
-  echo "1. **真实盘中实弹**：盘中价格更新、告警链路、通知/声音（通知/声音未在本脚本断言）；${MARKET_NOTE}。"
+    echo "1. **真实盘中实弹**：盘中价格更新、告警链路、通知/声音（通知/声音未在本脚本断言）；${MARKET_NOTE}。"
   echo "2. **移动端真机**：iOS Safari 安全区/触控/通知权限；headless 视口截图见 \`docs/visual-check.md\`（E5 PASS*，遗留 P2 触控/FAB 已由后续提交修复，仍建议真机确认）。"
   echo "3. **生产 Service Worker / GitHub Pages**：\`data/latest.json\` 缓存、旧快照回退提示、通知权限；本地 dev server 不注册 SW，需部署后验证（P1-8）。"
   echo "4. **集合竞价 09:15–09:25**：腾讯时间戳行为未经实测（P1-3）。"
