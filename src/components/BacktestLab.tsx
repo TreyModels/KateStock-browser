@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { quantsBacktests } from '@/lib/quants'
 import { Activity, ArrowLeft, ArrowRight, BarChart3, CircleAlert, Pause, Play, RefreshCw, RotateCcw } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { buildStoryFrame, runAllBacktests, type BacktestResult, type BacktestStrategyId } from '@/lib/backtest'
 import type { Quote, Stock } from '@/types'
 
@@ -101,6 +102,7 @@ function StoryChart({ result, bars, frameIndex }: { result: BacktestResult; bars
 }
 
 export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestLabProps) {
+  const { t } = useI18n()
   const available = stocks.filter((stock) => (quotes[stock.code]?.bars.length ?? 0) >= 45)
   const [selectedCode, setSelectedCode] = useState(available[0]?.code ?? stocks[0]?.code ?? '')
   const [selectedId, setSelectedId] = useState<BacktestStrategyId>('breakout')
@@ -144,8 +146,8 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
   if (!stock || !bars.length || !selected || !best) {
     return (
       <section className="standard-page">
-        <div className="page-heading"><div><span className="section-kicker">BACKTEST LAB</span><h1>回测实验室</h1><p>先加载最近日线，再让策略接受历史检验。</p></div></div>
-        <div className="empty-state"><BarChart3 size={32} /><h3>需要至少 45 根日线</h3><p>刷新自动行情后，即可生成策略回测与动态复盘。</p><button className="button-primary" onClick={onRefresh} disabled={refreshing}><RefreshCw size={17} className={refreshing ? 'spin' : ''} />加载历史行情</button></div>
+        <div className="page-heading"><div><span className="section-kicker">{t('backtest.kicker')}</span><h1>{t('backtest.kicker')}</h1><p>{t('backtest.needsBarsHint')}</p></div></div>
+        <div className="empty-state"><BarChart3 size={32} /><h3>{t('backtest.needsBars')}</h3><p>{t('backtest.needsBarsHint')}</p><button className="button-primary" onClick={onRefresh} disabled={refreshing}><RefreshCw size={17} className={refreshing ? 'spin' : ''} />{t('backtest.loadHistory')}</button></div>
       </section>
     )
   }
@@ -162,8 +164,8 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
   return (
     <section className="backtest-page">
       <div className="page-heading backtest-heading">
-        <div><span className="section-kicker">BACKTEST LAB</span><h1>让策略在时间中<br className="mobile-only" />证明自己。</h1><p>历史表现 × 当前状态 × 每一帧的交易理由</p></div>
-        <label className="backtest-stock-select">复盘标的
+        <div><span className="section-kicker">BACKTEST LAB</span><h1>{t('backtest.title1')}<br className="mobile-only" />{t('backtest.title2')}</h1><p>{t('backtest.sub')}</p></div>
+        <label className="backtest-stock-select">{t('backtest.pickStock')}
           <select value={selectedCode} onChange={(event) => setSelectedCode(event.target.value)}>
             {available.map((item) => <option value={item.code} key={item.id}>{item.name} · {item.code}</option>)}
           </select>
@@ -171,37 +173,37 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
       </div>
 
       <section className="performance-panel" style={{ marginBottom: 24, overflowX: 'auto' }}>
-        <div className="performance-title"><div><span className="section-kicker">DAILY RESEARCH</span><h2>每只股票的策略表现</h2></div></div>
-        <p>先用前 70% 的历史选择策略，再用后 30% 检验。验证期至少需要 3 笔完整交易，才显示可参考的结果。</p>
+        <div className="performance-title"><div><span className="section-kicker">DAILY RESEARCH</span><h2>{t('backtest.dailyTitle')}</h2></div></div>
+        <p>{t('backtest.dailySub')}</p>
         <table style={{ width: '100%', minWidth: 650, textAlign: 'left', borderSpacing: '0 12px' }}>
-          <thead><tr><th>股票</th><th>历史优选</th><th>验证收益</th><th>最大回撤</th><th>交易</th><th>最新条件</th></tr></thead>
+          <thead><tr><th>{t('backtest.col.stock')}</th><th>{t('backtest.col.picked')}</th><th>{t('backtest.col.validation')}</th><th>{t('backtest.col.drawdown')}</th><th>{t('backtest.col.trades')}</th><th>{t('backtest.col.latest')}</th></tr></thead>
           <tbody>{stockResults.map(({ item, history, result, validation }) => {
             const valid = validation && validation.trades.length >= 3
             const latest = result && history.length ? runAllBacktests(history, { code: item.code }).find((r) => r.id === result.id) : undefined
             return <tr key={item.id} onClick={() => { if (history.length >= 45) { setSelectedCode(item.code); if (result) setSelectedId(result.id) } }} style={{ cursor: 'pointer' }}>
-              <td>{item.name} · {item.code}</td><td>{result?.name ?? '样本不足'}</td>
-              <td>{valid ? percent(validation.totalReturnPct) : '证据不足'}</td><td>{valid ? percent(validation.maxDrawdownPct) : '—'}</td>
-              <td>{validation?.trades.length ?? 0}</td><td>{latest?.currentReasons[0] ?? '请加载历史行情'}</td>
+              <td>{item.name} · {item.code}</td><td>{result?.name ?? t('backtest.insufficient')}</td>
+              <td>{valid ? percent(validation.totalReturnPct) : t('backtest.evidenceShort')}</td><td>{valid ? percent(validation.maxDrawdownPct) : '—'}</td>
+              <td>{validation?.trades.length ?? 0}</td><td>{latest?.currentReasons[0] ?? t('stocks.waiting')}</td>
             </tr>
           })}</tbody>
         </table>
-        <p>点选股票查看完整回测。验证结果描述历史，未来表现可能不同；价格数据截至最近一个交易日。</p>
+        <p>{t('backtest.clickHint')}</p>
       </section>
 
       <section className="performance-panel" style={{ marginBottom: 24 }}>
-        <h2>策略解读</h2>
+        <h2>{t('backtest.readingTitle')}</h2>
         <p>{stock.name} 的{best.name}当前适配分为 {best.fitScore}。{best.currentReasons[0]}。在所选历史期间，策略收益 {percent(best.totalReturnPct)}，最大回撤 {percent(best.maxDrawdownPct)}，共完成 {best.trades.length} 笔交易。{best.trades.length < 3 ? '交易样本太少，暂时无法据此判断策略是否可靠。' : '请结合上方验证期结果和交易明细判断。'}</p>
       </section>
 
       <section className="performance-panel" style={{ marginBottom: 24 }}>
-        <h2>quants.md adaptations / 策略改编</h2>
-        <p>Single-stock adaptations, next-open fills. / 单只股票改编，次日开盘成交。成本：佣金万2.5、每笔最低 5 元（双向）+ 卖出印花税 0.05%；100 股整手；仓位与原版不同。</p>
-        {bars.length < 60 ? <p>At least 60 daily bars required. / 至少需要 60 根日线。</p> : quantsBacktests(bars).map(r => <div key={r.id} style={{ padding: '12px 0', borderBottom: '1px solid #ddd' }}><strong>{r.id} {r.name}</strong><p>{r.signal} · Return / 收益 {percent(r.ret)} · Drawdown / 回撤 {percent(r.drawdown)} · Trades / 交易 {r.trades}</p><p>{r.trades < 3 ? 'Too few completed trades to assess. / 完成交易过少，无法评估。' : `Win rate / 胜率 ${(r.wins / r.trades * 100).toFixed(0)}%`}</p></div>)}
+        <h2>{t('backtest.quantsTitle')}</h2>
+        <p>{t('backtest.quantsCost')}</p>
+        {bars.length < 60 ? <p>{t('backtest.quantsNeedBars')}</p> : quantsBacktests(bars).map(r => <div key={r.id} style={{ padding: '12px 0', borderBottom: '1px solid #ddd' }}><strong>{r.id} {r.name}</strong><p>{r.signal} · Return / 收益 {percent(r.ret)} · Drawdown / 回撤 {percent(r.drawdown)} · Trades / 交易 {r.trades}</p><p>{r.trades < 3 ? 'Too few completed trades to assess. / 完成交易过少，无法评估。' : `Win rate / 胜率 ${(r.wins / r.trades * 100).toFixed(0)}%`}</p></div>)}
       </section>
       <section className="match-hero">
         <div className="match-copy">
-          <span className="match-label"><Activity size={14} />当前规则匹配，而非收益预测</span>
-          <h2>{hasStrongFit ? best.name : '等待规则共振'}<small>{hasStrongFit ? '在此刻相对更适配' : '当前无强适配策略'}</small></h2>
+          <span className="match-label"><Activity size={14} />{t('backtest.matchLabel')}</span>
+          <h2>{hasStrongFit ? best.name : t('backtest.matchWait')}<small>{hasStrongFit ? t('backtest.matchStrong') : t('backtest.matchNoStrong')}</small></h2>
           <p>{stock.name} · {stock.code} · 截至 {endDate}</p>
           <div className="match-reasons">
             {best.currentReasons.slice(0, 3).map((reason) => <span key={reason}><ArrowRight size={14} />{reason}</span>)}
@@ -209,15 +211,15 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
         </div>
         <ScoreRing score={best.score} />
         <div className="match-meta">
-          <div><span>当前状态</span><strong>{best.fitScore}</strong></div>
-          <div><span>历史样本</span><strong>{best.performanceScore}</strong></div>
-          <p>{best.sampleNote}。适配分中当前状态占 70%，历史样本占 30%。</p>
+          <div><span>{t('backtest.matchCurrent')}</span><strong>{best.fitScore}</strong></div>
+          <div><span>{t('backtest.matchHistory')}</span><strong>{best.performanceScore}</strong></div>
+          <p>{best.sampleNote}。{t('backtest.matchNote')}</p>
         </div>
       </section>
 
       <div className="backtest-layout">
         <section className="backtest-main">
-          <div className="section-heading"><div><span className="section-kicker">STRATEGY RANKING</span><h2>四种策略，同一段历史</h2></div><span className="data-stamp">{startDate} — {endDate}</span></div>
+          <div className="section-heading"><div><span className="section-kicker">STRATEGY RANKING</span><h2>{t('backtest.rankingTitle')}</h2></div><span className="data-stamp">{startDate} — {endDate}</span></div>
           <div className="strategy-ranking">
             {results.map((result) => (
               <button key={result.id} className={selectedId === result.id ? 'active' : ''} onClick={() => setSelectedId(result.id)}>
@@ -232,28 +234,28 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
           <div className="performance-panel">
             <div className="performance-title"><div><span className="section-kicker">EQUITY & RISK</span><h2>{selected.name}</h2></div><span className={selected.trades.length < 3 ? 'sample-badge warning' : 'sample-badge'}>{selected.sampleNote}</span></div>
             <div className="performance-metrics">
-              <div><span>区间收益</span><strong className={selected.totalReturnPct >= 0 ? 'market-up' : 'market-down'}>{percent(selected.totalReturnPct)}</strong></div>
-              <div><span>最大回撤</span><strong>{selected.maxDrawdownPct.toFixed(2)}%</strong></div>
-              <div><span>交易胜率</span><strong>{selected.winRate.toFixed(1)}%</strong></div>
-              <div><span>盈利因子</span><strong>{selected.profitFactor === null ? '∞' : selected.profitFactor.toFixed(2)}</strong></div>
+              <div><span>{t('backtest.stats.return')}</span><strong className={selected.totalReturnPct >= 0 ? 'market-up' : 'market-down'}>{percent(selected.totalReturnPct)}</strong></div>
+              <div><span>{t('backtest.stats.drawdown')}</span><strong>{selected.maxDrawdownPct.toFixed(2)}%</strong></div>
+              <div><span>{t('backtest.stats.winRate')}</span><strong>{selected.winRate.toFixed(1)}%</strong></div>
+              <div><span>{t('backtest.stats.profitFactor')}</span><strong>{selected.profitFactor === null ? '∞' : selected.profitFactor.toFixed(2)}</strong></div>
             </div>
             <EquityChart result={selected} bars={bars} />
             {(selected.unfilledEntries > 0 || selected.slippageWaits > 0) && (
               <p className="backtest-limits">
-                本次回测：{selected.unfilledEntries} 次涨停未能买入、{selected.slippageWaits} 次跌停延迟卖出。
+                {t('backtest.limit', { unfilled: selected.unfilledEntries, waits: selected.slippageWaits })}
               </p>
             )}
-            <details className="assumptions"><summary>回测假设与限制</summary><p>收盘生成信号，下一交易日开盘执行；佣金万2.5、每笔最低 5 元（双向）+ 卖出印花税 0.05%；100 股整手。已按日线近似建模涨停买不到（顺延一次后放弃）与跌停卖不掉（延迟卖出）；止损/目标按跳空后实际可成交价；数据为复权价，涨跌停用前收近似；不含分红、盘中滑点/冲击成本。止损与目标在同一交易日均触及时，保守地按止损优先。</p></details>
+            <details className="assumptions"><summary>{t('backtest.assumptionsTitle')}</summary><p>{t('backtest.costLine')}{t('backtest.assumptions')}</p></details>
           </div>
 
           <section className="storyboard">
             <div className="storyboard-header">
-              <div><span className="section-kicker">DYNAMIC STORYBOARD</span><h2>动态复盘</h2></div>
+              <div><span className="section-kicker">DYNAMIC STORYBOARD</span><h2>{t('backtest.storyTitle')}</h2></div>
               <div className="playback-controls">
-                <button aria-label="回到起点" onClick={() => { setPlaying(false); setFrameIndex(20) }}><RotateCcw size={16} /></button>
-                <button aria-label="上一帧" disabled={frameIndex <= 20} onClick={() => { setPlaying(false); setFrameIndex((current) => Math.max(20, current - 1)) }}><ArrowLeft size={18} /></button>
-                <button className="play-button" aria-label={playing ? '暂停复盘' : '播放复盘'} onClick={() => playing ? setPlaying(false) : play()}>{playing ? <Pause size={18} /> : <Play size={18} />}{playing ? '暂停' : '播放'}</button>
-                <button aria-label="下一帧" disabled={frameIndex >= bars.length - 1} onClick={() => { setPlaying(false); setFrameIndex((current) => Math.min(bars.length - 1, current + 1)) }}><ArrowRight size={18} /></button>
+                <button aria-label={t('backtest.reset')} onClick={() => { setPlaying(false); setFrameIndex(20) }}><RotateCcw size={16} /></button>
+                <button aria-label={t('backtest.prev')} disabled={frameIndex <= 20} onClick={() => { setPlaying(false); setFrameIndex((current) => Math.max(20, current - 1)) }}><ArrowLeft size={18} /></button>
+                <button className="play-button" aria-label={playing ? t('backtest.pause') : t('backtest.play')} onClick={() => playing ? setPlaying(false) : play()}>{playing ? <Pause size={18} /> : <Play size={18} />}{playing ? t('backtest.pause') : t('backtest.play')}</button>
+                <button aria-label={t('backtest.next')} disabled={frameIndex >= bars.length - 1} onClick={() => { setPlaying(false); setFrameIndex((current) => Math.min(bars.length - 1, current + 1)) }}><ArrowRight size={18} /></button>
               </div>
             </div>
             <div className="story-price"><span>{frame.date}</span><strong>{frame.close.toFixed(2)}</strong><em className={frame.changePct >= 0 ? 'market-up' : 'market-down'}>{percent(frame.changePct)}</em></div>
@@ -268,14 +270,14 @@ export function BacktestLab({ stocks, quotes, refreshing, onRefresh }: BacktestL
         </section>
 
         <aside className="trade-log">
-          <div className="section-heading compact"><div><span className="section-kicker">TRADE LOG</span><h2>最近交易</h2></div><span>{selected.trades.length} 笔</span></div>
+          <div className="section-heading compact"><div><span className="section-kicker">TRADE LOG</span><h2>{t('backtest.tradeLog')}</h2></div><span>{selected.trades.length} 笔</span></div>
           {selected.trades.length ? [...selected.trades].reverse().slice(0, 8).map((trade) => (
             <button key={`${trade.entryIndex}-${trade.exitIndex}`} onClick={() => { setPlaying(false); setFrameIndex(trade.exitIndex) }}>
               <span><strong>{trade.exitDate}</strong><small>{trade.exitReason}</small></span>
               <span><b className={trade.returnPct >= 0 ? 'market-up' : 'market-down'}>{percent(trade.returnPct)}</b><small>{trade.entryDate.slice(5)} 买入</small></span>
             </button>
-          )) : <div className="no-trades"><CircleAlert size={22} /><p>这段历史没有完整交易样本。策略适配分已降权，不把“没有交易”解释为“表现稳定”。</p></div>}
-          <p className="trade-log-note">点击一笔交易，时间轴会跳到退出日。B / S 分别标记回测买入与卖出。</p>
+          )) : <div className="no-trades"><CircleAlert size={22} /><p>{t('backtest.noTrades')}</p></div>}
+          <p className="trade-log-note">{t('backtest.tradeNote')}</p>
         </aside>
       </div>
     </section>

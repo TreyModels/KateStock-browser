@@ -684,3 +684,10 @@ html.theme-switching *::after {
 .lang-toggle button.active { background: oklch(var(--primary)); color: oklch(var(--primary-foreground)); }
 .sidebar-lang { margin: 12px 8px; }
 .settings-lang { margin-top: 14px; }
+.public-filter-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; padding: 8px 10px; border-radius: 9px; background: oklch(var(--accent)); color: oklch(var(--accent-foreground)); font-size: 12px; font-weight: 550; }
+.public-filter-bar button { min-height: 44px; padding: 0 12px; border: 1px solid oklch(var(--accent-foreground) / .3); border-radius: 8px; background: oklch(var(--card)); color: oklch(var(--accent-foreground)); font-size: 12px; font-weight: 600; }
+
+/* 公开清单 regime 降级样式 */
+.public-stock.is-blocked { opacity: .62; }
+.public-stock-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 7px; border-radius: 999px; background: oklch(var(--secondary)); color: oklch(var(--muted-foreground)); font-size: 10px; font-weight: 650; margin-left: 6px; }
+.public-stock-signal.is-blocked strong { color: oklch(var(--muted-foreground)); }

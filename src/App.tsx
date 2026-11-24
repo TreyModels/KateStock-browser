@@ -35,7 +35,7 @@ import { rankStrategies } from '@/lib/strategy-ranking'
 import { readRegimeCache } from '@/lib/regime'
 import { fetchQuotes } from '@/lib/market'
 import { generateStrategy } from '@/lib/strategy'
-import type { MarketPhase, Quote, Stock, StockStatus, StrategyAction } from '@/types'
+import type { MarketPhase, Quote, Stock, StockStatus, Strategy, StrategyAction } from '@/types'
 import './App.css'
 
 type View = 'today' | 'stocks' | 'backtest' | 'rules' | 'settings' | 'library'
@@ -151,15 +151,47 @@ function App() {
   }
 
   // 展示层用 regime 过滤后的列表（熊市禁买/震荡半仓）；提醒层仍用未过滤 strategies（见上方注释）。
-  const displayStrategies = useMemo(() => applyRegimeFilter(strategies, regimeDetail?.regime), [strategies, regimeDetail?.regime])
+  const displayStrategies = useMemo(() => applyRegimeFilter(strategies, regimeDetail?.regime, lang), [strategies, regimeDetail?.regime, lang])
   const selectedStrategy = displayStrategies.find((strategy) => strategy.code === selectedCode)
   const buyCount = displayStrategies.filter((item) => item.action === 'breakout' || item.action === 'pullback').length
   const riskCount = displayStrategies.filter((item) => item.action === 'reduce' || item.action === 'stop').length
+  // 排名统计覆盖「个人策略 ∪ 公开快照信号」：把 report.signals 映射成最小 Strategy 形状；
+  // 同一代码个人清单优先，避免重复计数。公开信号无持仓语义（isHolding=false）。
+  const publicStrategies = useMemo<Strategy[]>(() => {
+    const signals = report?.signals
+    if (!signals) return []
+    return Object.entries(signals).map(([code, signal]) => {
+      const quote = report?.quotes[code]
+      return {
+        stockId: `public-${code}`,
+        code,
+        name: code,
+        action: signal.action,
+        actionLabel: signal.actionLabel,
+        score: signal.score,
+        summary: signal.summary,
+        reasons: signal.reasons,
+        isHolding: false,
+        price: quote?.price ?? 0,
+        changePct: quote?.changePct ?? 0,
+        tradeDate: report?.tradeDate ?? '',
+        source: 'auto',
+        indicators: signal.indicators,
+        bars: [],
+      }
+    })
+  }, [report])
+  const rankingStrategies = useMemo(() => {
+    const personalCodes = new Set(strategies.map((strategy) => strategy.code))
+    return [...strategies, ...publicStrategies.filter((strategy) => !personalCodes.has(strategy.code))]
+  }, [strategies, publicStrategies])
   const rankingRows = useMemo(() => rankStrategies({
-    strategies,
+    strategies: rankingStrategies,
     regime: regimeDetail?.regime ?? 'range',
     breadthPct: regimeDetail?.breadthPct,
-  }), [strategies, regimeDetail?.regime, regimeDetail?.breadthPct])
+    lang,
+  }), [rankingStrategies, regimeDetail?.regime, regimeDetail?.breadthPct, lang])
+  const rankingAnyData = rankingStrategies.length > 0
   const scrollToStrategyList = () => {
     strategyListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
@@ -402,6 +434,7 @@ function App() {
               />
               <StrategyRanking
                 rows={rankingRows}
+                hasAnyData={rankingAnyData}
                 regime={regimeDetail?.regime}
                 selectedAction={rankingSelection?.action ?? null}
                 selectedId={rankingSelection?.id ?? null}
@@ -436,7 +469,18 @@ function App() {
                   />
                 </section>
               )}
-              <PublicStocks report={report} stocks={data.stocks} onImport={() => setView('settings')} liveQuotes={liveQuotes} liveErrors={liveErrors} phase={phase} />
+              <PublicStocks
+                report={report}
+                stocks={data.stocks}
+                onImport={() => setView('settings')}
+                liveQuotes={liveQuotes}
+                liveErrors={liveErrors}
+                phase={phase}
+                regime={regimeDetail?.regime}
+                actionFilter={rankingSelection?.action ?? null}
+                actionFilterLabel={rankingSelection ? rankingRows.find((row) => row.action === rankingSelection.action)?.label : undefined}
+                onClearFilter={() => setRankingSelection(null)}
+              />
               <ResearchSettings />
               <section className="briefing-panel">
                 <div className="briefing-copy">

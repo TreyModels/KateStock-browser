@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowUpRight, ChevronRight, Crosshair, Shield, Target } from 'lucide-react'
 import type { LiveQuote, MarketPhase, Strategy } from '@/types'
+import { useI18n } from '@/lib/i18n'
 import { evaluateLive, isHoldingStrategy } from '@/lib/live-signals'
 import { LivePrice } from './live/LivePrice'
 import {
@@ -41,6 +42,7 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
   phase: MarketPhase
   onOpen: () => void
 }) {
+  const { t } = useI18n()
   const status = liveQuote ? evaluateLive(strategy, liveQuote) : undefined
   const price = liveQuote?.price ?? strategy.price
   const changePct = liveQuote?.changePct ?? strategy.changePct
@@ -63,11 +65,11 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
   const hitSummary = hits.map((kind) => alertKindLabel[kind]).join(' · ')
   const quoteLine = liveQuote
     ? staleLive
-      ? `上次报价 ${formatBeijingClock(liveQuote.updatedAt)}（未刷新）· 收盘日线 ${strategy.tradeDate}`
+      ? `${t('strategy.lastQuote', { time: formatBeijingClock(liveQuote.updatedAt) })} · ${t('strategy.closeBase', { date: strategy.tradeDate })}`
       : livePhase
-        ? `盘中报价 ${formatBeijingClock(liveQuote.updatedAt)} · 收盘日线 ${strategy.tradeDate}`
-        : `${strategy.source === 'auto' ? '自动日线' : '手动行情'} · ${strategy.tradeDate}`
-    : `${strategy.source === 'auto' ? '自动日线' : '手动行情'} · ${strategy.tradeDate}`
+        ? `${t('strategy.intradayQuote', { time: formatBeijingClock(liveQuote.updatedAt) })} · ${t('strategy.closeBase', { date: strategy.tradeDate })}`
+        : `${strategy.source === 'auto' ? t('strategy.daily') : t('strategy.manual')} · ${strategy.tradeDate}`
+    : `${strategy.source === 'auto' ? t('strategy.daily') : t('strategy.manual')} · ${strategy.tradeDate}`
 
   return (
     <article className={`strategy-card${primaryHit ? ` strategy-card-hit-${primaryHit}` : ''}`}>
@@ -76,7 +78,7 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate text-[17px] font-semibold tracking-tight">{strategy.name}</h3>
             <span className="code-label">{strategy.code}</span>
-            {holding && <span className="status-tag status-holding">持仓</span>}
+            {holding && <span className="status-tag status-holding">{t('strategy.holdingTag')}</span>}
           </div>
           <div className="mt-2 flex flex-wrap items-baseline gap-2">
             <LivePrice value={price} changePct={changePct} phase={phase} live={Boolean(liveQuote)} stale={staleLive} quoteAt={liveQuote?.updatedAt} />
@@ -84,33 +86,33 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <span className={`signal-pill ${actionClass[strategy.action]}`}>{strategy.actionLabel}</span>
-          <span className="text-xs text-muted-foreground">强度 {strategy.score}</span>
+          <span className="text-xs text-muted-foreground">{t('strategy.strength', { n: strategy.score })}</span>
         </div>
       </div>
 
       {primaryHit && (
         <div className={`strategy-hit-banner strategy-hit-${primaryHit}`}>
           <AlertTriangle size={14} aria-hidden="true" />
-          <span>{staleLive ? '上次报价命中' : livePhase ? '盘中命中' : '价格触及'}：{hitSummary}</span>
+          <span>{staleLive ? t('strategy.lastQuoteHit') : livePhase ? t('strategy.intradayHit') : t('strategy.priceHit')}：{hitSummary}</span>
         </div>
       )}
 
       <p className="mt-4 text-[15px] leading-6 text-foreground/80">{strategy.summary}</p>
-      {bearWatch && <p className="strategy-bear-note">熊市：不加仓，只管理持仓/等结构修复</p>}
+      {bearWatch && <p className="strategy-bear-note">{t('strategy.bearNote')}</p>}
 
       <div className="mt-4 grid grid-cols-3 gap-2 border-y border-border/80 py-3">
         <div className={`level-item${hits.includes('trigger') ? ' level-hit level-hit-trigger' : ''}`}>
-          <span className="level-label"><Crosshair size={12} />触发</span>
+          <span className="level-label"><Crosshair size={12} />{t('strategy.trigger')}</span>
           <strong className="number-text mt-1 block text-sm">{formatPrice(strategy.trigger)}</strong>
           {triggerDistance && <span className={`level-distance${hits.includes('trigger') ? ' market-up' : ''}`}>{triggerDistance}</span>}
         </div>
         <div className={`level-item${hits.includes('stop') ? ' level-hit level-hit-stop' : ''}`}>
-          <span className="level-label"><Shield size={12} />保护</span>
+          <span className="level-label"><Shield size={12} />{t('strategy.stop')}</span>
           <strong className="number-text mt-1 block text-sm">{formatPrice(strategy.stop)}</strong>
           {stopDistance && <span className={`level-distance${hits.includes('stop') ? ' market-down' : ''}`}>{stopDistance}</span>}
         </div>
         <div className={`level-item${hits.includes('target') ? ' level-hit level-hit-target' : ''}`}>
-          <span className="level-label"><Target size={12} />目标</span>
+          <span className="level-label"><Target size={12} />{t('strategy.target')}</span>
           <strong className="number-text mt-1 block text-sm">{formatPrice(strategy.target)}</strong>
           {targetDistance && <span className={`level-distance${hits.includes('target') ? ' market-up' : ''}`}>{targetDistance}</span>}
         </div>
@@ -123,12 +125,12 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
         <div className="shrink-0 text-right">
           {strategy.suggestedShares !== undefined && (
             <>
-              <span className="block text-xs text-muted-foreground">{strategy.suggestedShares > 0 ? '参考上限' : '参考仓位'}</span>
-              <span className="number-text text-sm font-semibold">{strategy.suggestedShares > 0 ? `${strategy.suggestedShares} 股` : '不足 1 手'}</span>
+              <span className="block text-xs text-muted-foreground">{strategy.suggestedShares > 0 ? t('strategy.limit') : t('strategy.sizeHint')}</span>
+              <span className="number-text text-sm font-semibold">{strategy.suggestedShares > 0 ? `${strategy.suggestedShares}` : t('strategy.sublot')}</span>
             </>
           )}
           <button type="button" className="mt-1 flex min-h-11 w-full items-center justify-end gap-1 text-sm font-medium text-primary" onClick={onOpen}>
-            完整计划 <ChevronRight size={16} />
+            {t('strategy.completePlan')} <ChevronRight size={16} />
           </button>
         </div>
       </div>

@@ -11,6 +11,7 @@ import type { StrategyAction } from '@/types'
  */
 export function StrategyRanking({
   rows,
+  hasAnyData,
   regime,
   selectedAction,
   selectedId,
@@ -18,6 +19,8 @@ export function StrategyRanking({
   onScrollToList,
 }: {
   rows: StrategyScore[]
+  /** 个人策略与公开快照信号都为空时，展示空态而不是一排 0 */
+  hasAnyData: boolean
   regime?: MarketRegime
   selectedAction: StrategyAction | null
   selectedId: string | null
@@ -48,7 +51,7 @@ export function StrategyRanking({
         )}
       </div>
 
-      {sorted.length > 0 ? (
+      {hasAnyData && sorted.length > 0 ? (
         <ol className="rank-list">
           {sorted.map((row, index) => {
             const blocked = row.status === 'blocked'
@@ -111,7 +114,7 @@ export function StrategyRanking({
           })}
         </ol>
       ) : (
-        <p className="rank-empty">{t('ranking.empty')}</p>
+        <p className="rank-empty">{hasAnyData ? t('ranking.empty') : t('ranking.emptyNoData')}</p>
       )}
 
       {selectedAction && selectedRow && (

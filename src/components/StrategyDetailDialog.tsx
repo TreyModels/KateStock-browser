@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AlertTriangle, Check, Copy } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { useI18n } from '@/lib/i18n'
 import { evaluateLive, isHoldingStrategy } from '@/lib/live-signals'
 import type { LiveQuote, MarketPhase, Strategy } from '@/types'
 import { LivePrice } from './live/LivePrice'
@@ -26,6 +27,7 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
   phase?: MarketPhase
 }) {
   const [copied, setCopied] = useState(false)
+  const { t } = useI18n()
   if (!strategy) return null
 
   const status = liveQuote ? evaluateLive(strategy, liveQuote) : undefined
@@ -42,9 +44,9 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
   const targetDistance = targetDistanceLabel(distanceToLevelPct(strategy.target, price))
   const bearWatch = strategy.actionLabel === '熊市观望'
   const levels = [
-    { label: '触发价', value: strategy.trigger, distance: triggerDistance, kind: 'trigger' as const },
-    { label: '保护位', value: strategy.stop, distance: stopDistance, kind: 'stop' as const },
-    { label: '目标位', value: strategy.target, distance: targetDistance, kind: 'target' as const },
+    { label: t('detail.triggerPrice'), value: strategy.trigger, distance: triggerDistance, kind: 'trigger' as const },
+    { label: t('detail.stopPrice'), value: strategy.stop, distance: stopDistance, kind: 'stop' as const },
+    { label: t('detail.targetPrice'), value: strategy.target, distance: targetDistance, kind: 'target' as const },
   ]
 
   const copyPlan = async () => {
@@ -68,9 +70,9 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
       <DialogContent className="stock-dialog">
         <DialogHeader>
           <div className="flex items-center gap-2 pr-8">
-            <DialogTitle>{strategy.name} · 今日计划</DialogTitle>
+            <DialogTitle>{t('detail.planTitle', { name: strategy.name })}</DialogTitle>
           </div>
-          <DialogDescription>{strategy.code} · {strategy.tradeDate} · {strategy.source === 'auto' ? '自动日线' : '手动行情'}{holding ? ' · 持仓策略' : ''}{liveQuote ? (staleLive ? ' · 沿用上次报价（未刷新）' : isLivePricePhase(phase) ? ' · 已接入盘中报价' : ' · 含最近报价（收盘）') : ''}</DialogDescription>
+          <DialogDescription>{strategy.code} · {strategy.tradeDate} · {strategy.source === 'auto' ? t('detail.autoDaily') : t('detail.manualQuote')}{holding ? ' · ' + t('strategy.holdingTag') : ''}{liveQuote ? (staleLive ? ' · ' + t('detail.lastQuoteMode') : isLivePricePhase(phase) ? ' · ' + t('detail.liveQuote') : ' · ' + t('detail.recentClose')) : ''}</DialogDescription>
         </DialogHeader>
         <div className="mt-1 flex flex-wrap items-end justify-between gap-3">
           <LivePrice value={price} changePct={changePct} phase={phase} live={Boolean(liveQuote)} stale={staleLive} quoteAt={liveQuote?.updatedAt} size="detail" />
@@ -79,12 +81,12 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
         {primaryHit && (
           <div className={`strategy-hit-banner strategy-hit-${primaryHit}`}>
             <AlertTriangle size={14} aria-hidden="true" />
-            <span>{staleLive ? '上次报价命中' : '价格命中'}：{hits.map(kind => alertKindLabel[kind]).join(' · ')}</span>
+            <span>{staleLive ? t('detail.lastQuoteHit') : t('detail.hit')}：{hits.map(kind => alertKindLabel[kind]).join(' · ')}</span>
           </div>
         )}
         <Sparkline bars={strategy.bars} positive={changePct >= 0} large />
         <p className="text-[15px] leading-6">{strategy.summary}</p>
-        {bearWatch && <p className="strategy-bear-note">熊市：不加仓，只管理持仓/等结构修复</p>}
+        {bearWatch && <p className="strategy-bear-note">{t('strategy.bearNote')}</p>}
         <div className="grid grid-cols-3 gap-2">
           {levels.map(({ label, value, distance, kind }) => (
             <div className={`level-box${hits.includes(kind) ? ' level-box-hit' : ''}`} key={label}>
@@ -96,13 +98,13 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
         </div>
         {strategy.suggestedShares !== undefined && (
           <div className="risk-ticket">
-            <span>风险预算下的参考上限</span>
-            <strong>{strategy.suggestedShares > 0 ? `${strategy.suggestedShares} 股 · 约 ${strategy.suggestedPositionPct}% 仓位` : '不足 1 手（不足 100 股），暂不建仓'}</strong>
-            <small>按整手向下取整，并受单笔风险与最大仓位双重限制。</small>
+            <span>{t('detail.riskTicket')}</span>
+            <strong>{strategy.suggestedShares > 0 ? t('detail.riskTicketLine', { n: strategy.suggestedShares, pct: strategy.suggestedPositionPct ?? 0 }) : t('detail.sublotLine')}</strong>
+            <small>{t('detail.riskTicketNote')}</small>
           </div>
         )}
         <div>
-          <h4 className="mb-2 text-sm font-semibold">信号依据</h4>
+          <h4 className="mb-2 text-sm font-semibold">{t('detail.reasons')}</h4>
           <ul className="space-y-2 text-sm leading-6 text-muted-foreground">
             {strategy.reasons.map((reason) => <li key={reason} className="flex gap-2"><Check size={16} className="mt-1 shrink-0 text-primary" />{reason}</li>)}
           </ul>
@@ -115,9 +117,9 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
           <span>RSI14 <b>{strategy.indicators.rsi14.toFixed(1)}</b></span>
           <span>量比 <b>{strategy.indicators.volumeRatio.toFixed(2)}</b></span>
         </div>
-        <p className="text-xs leading-5 text-muted-foreground">策略基于固定规则生成，未考虑涨跌停、流动性、滑点和你的完整财务状况，不构成收益建议。{staleLive ? '本轮盘中报价刷新失败，显示的是上次报价，不是实时行情。' : liveQuote && isLivePricePhase(phase) ? '盘中价格来自公开接口，可能延迟。' : '当前显示收盘价或最近报价，不是实时行情。'}</p>
+        <p className="text-xs leading-5 text-muted-foreground">{t('detail.disclaimer')}{staleLive ? t('detail.priceClosed') : liveQuote && isLivePricePhase(phase) ? t('detail.priceLive') : t('detail.priceClosed')}</p>
         <button type="button" className="button-primary w-full" onClick={copyPlan}>
-          {copied ? <Check size={17} /> : <Copy size={17} />}{copied ? '已复制计划' : '复制今日计划'}
+          {copied ? <Check size={17} /> : <Copy size={17} />}{copied ? t('detail.copied') : t('detail.copy')}
         </button>
       </DialogContent>
     </Dialog>

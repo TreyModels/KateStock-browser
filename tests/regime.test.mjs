@@ -11,6 +11,8 @@ import {
   loadRegime,
   loadRegimeDetail,
   normalizeBars,
+  parseSinaKlineJsonp,
+  parseTencentKlineJsonp,
   readRegimeCache,
 } from '../src/lib/regime.ts'
 
@@ -263,9 +265,11 @@ test('loadRegime：腾讯失败 → 新浪成功，source=index；当天缓存�
     assert.equal(detail.info.source, 'index')
     assert.equal(detail.info.regime, 'bull')
     assert.equal(detail.info.asOf, INDEX_UPTREND.at(-1).date)
-    assert.equal(mock.calls.length, 2) // 腾讯 1 次（501）+ 新浪 1 次
-    assert.ok(mock.calls[0].includes('ifzq'))
-    assert.ok(mock.calls[1].includes('quotes.sina.cn'))
+    // Node 顺序：fetch 腾讯 web + 裸域（各 1 次 501）+ fetch 新浪 1 次
+    assert.equal(mock.calls.length, 3)
+    assert.ok(mock.calls[0].includes('://web.ifzq.gtimg.cn'))
+    assert.ok(mock.calls[1].includes('://ifzq.gtimg.cn'))
+    assert.ok(mock.calls[2].includes('quotes.sina.cn'))
 
     // 缓存已写入，可被读取
     const cached = readRegimeCache(FIXED_NOW)
@@ -275,11 +279,11 @@ test('loadRegime：腾讯失败 → 新浪成功，source=index；当天缓存�
     // 当天第二次：直接命中缓存，不再发请求
     const again = await loadRegimeDetail(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW })
     assert.equal(again.fromCache, true)
-    assert.equal(mock.calls.length, 2)
+    assert.equal(mock.calls.length, 3)
 
     // force 强制刷新
     await loadRegimeDetail(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW, force: true })
-    assert.equal(mock.calls.length, 4)
+    assert.equal(mock.calls.length, 6)
 
     // 契约入口只返回 info
     const info = await loadRegime(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW })
@@ -300,16 +304,17 @@ test('loadRegime：两条源都失败 → 退回宽度（source=breadth）并带
     assert.equal(detail.info.regime, 'bear') // 宽度 33.3% ≤ 40%
     assert.ok(detail.info.breadthPct !== undefined)
     assert.match(detail.error, /沪深300 日线获取失败/)
-    assert.equal(mock.calls.length, 2) // 腾讯 + 新浪各一次
+    // Node 顺序：腾讯 web + 裸域 + 新浪 各 1 次 fetch
+    assert.equal(mock.calls.length, 3)
 
     const info = await loadRegime(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW })
     assert.equal(info.source, 'breadth')
-    assert.equal(mock.calls.length, 4) // loadRegime 再试一轮腾讯+新浪
+    assert.equal(mock.calls.length, 6) // loadRegime 再试一轮（腾讯 web/裸域 + 新浪）
 
     // breadth 缓存不短路：下次加载会重试数据源（手动 refresh 也走这条）
     const again = await loadRegimeDetail(watchlist, { fetcher: globalThis.fetch, now: FIXED_NOW })
     assert.equal(again.fromCache, false)
-    assert.equal(mock.calls.length, 6)
+    assert.equal(mock.calls.length, 9)
   } finally {
     mock.restore()
     storage.restore()
@@ -331,7 +336,7 @@ test('缓存版本不符/非法内容 → 忽略缓存并重新拉取', async ()
   try {
     const detail = await loadRegimeDetail([UP_BARS], { fetcher: globalThis.fetch, now: FIXED_NOW })
     assert.equal(detail.info.source, 'index')
-    assert.equal(mock.calls.length, 2)
+    assert.equal(mock.calls.length, 3)
   } finally {
     mock.restore()
     storage.restore()
@@ -490,6 +495,201 @@ test('en：沪深300 两条源都失败时 error 为英文（zh 仍为中文）'
     assert.equal(enDetail.info.source, 'breadth')
     assert.match(enDetail.info.evidence[0], /CSI 300 daily bars missing/)
   } finally {
+    storage.restore()
+  }
+})
+
+
+/* ─────────────────────────────────────────────────────────────
+ * 8) JSONP 回退（task-33）：文本解析、变量名注入、浏览器回退顺序、宽度兜底
+ * ───────────────────────────────────────────────────────────── */
+
+function tencentJsonpText(variable, bars) {
+  return `/*<script>location.href='//gu.qq.com';</script>*/\nvar ${variable}=${JSON.stringify({
+    code: 0,
+    data: { sh000300: { qfqday: bars.map((bar) => [bar.date, String(bar.open), String(bar.close), String(bar.high), String(bar.low), '1000']) } },
+  })};`
+}
+
+function sinaJsonpText(variable, bars) {
+  return `/*<script>location.href='//sina.com';</script>*/\nvar ${variable}=(${JSON.stringify(
+    bars.map((bar) => ({
+      day: bar.date,
+      open: String(bar.open),
+      high: String(bar.high),
+      low: String(bar.low),
+      close: String(bar.close),
+      volume: '100000',
+    })),
+  )});`
+}
+
+test('parseTencentKlineJsonp：var k={...}（含注释前缀/尾分号）解析出 payload', () => {
+  const text = tencentJsonpText('__t1', INDEX_UPTREND)
+  const payload = parseTencentKlineJsonp(text, '__t1')
+  assert.equal(payload.code, 0)
+  assert.equal(payload.data.sh000300.qfqday.length, INDEX_UPTREND.length)
+  // 无尾分号也兼容
+  assert.equal(parseTencentKlineJsonp(tencentJsonpText('__t2', INDEX_UPTREND).replace(/;$/, ''), '__t2').code, 0)
+  // 错误变量名/非法 JSON 抛错
+  assert.throws(() => parseTencentKlineJsonp(text, '__other'), /Invalid JSONP wrapper format/)
+  assert.throws(() => parseTencentKlineJsonp('var __t1=not json;', '__t1'), /JSON/)
+})
+
+test('parseSinaKlineJsonp：var k=([...])（含注释前缀/尾分号）解析出数组', () => {
+  const text = sinaJsonpText('__s1', INDEX_UPTREND)
+  const payload = parseSinaKlineJsonp(text, '__s1')
+  assert.ok(Array.isArray(payload))
+  assert.equal(payload.length, INDEX_UPTREND.length)
+  assert.equal(payload.at(-1).day, INDEX_UPTREND.at(-1).date)
+  assert.equal(parseSinaKlineJsonp(sinaJsonpText('__s2', INDEX_UPTREND).replace(/;$/, ''), '__s2').length, INDEX_UPTREND.length)
+  assert.throws(() => parseSinaKlineJsonp(text, '__other'), /Invalid JSONP wrapper format/)
+})
+
+/** mock 浏览器环境：拦截 script 注入，按 URL 决定成功/失败（不访问网络）。 */
+function mockJsonpBrowser(handler) {
+  const originalDocument = globalThis.document
+  const originalWindow = globalThis.window
+  const scripts = []
+  globalThis.window = globalThis
+  globalThis.document = {
+    head: {
+      appendChild(script) {
+        const src = String(script.src)
+        scripts.push(src)
+        setTimeout(() => handler(src, script, globalThis), 0)
+      },
+    },
+    createElement() {
+      return { src: '', async: false, onload: null, onerror: null, remove() {} }
+    },
+  }
+  return {
+    scripts,
+    restore() {
+      globalThis.document = originalDocument
+      globalThis.window = originalWindow
+    },
+  }
+}
+
+function setJsonpGlobal(url, payload, scope, script) {
+  const sinaMatch = /jsonp_v2\.php\/var%20([^=]+)=/.exec(url)
+  const tencentMatch = /_var=([^&]+)/.exec(url)
+  const name = sinaMatch ? decodeURIComponent(sinaMatch[1]) : tencentMatch ? decodeURIComponent(tencentMatch[1]) : undefined
+  if (name) scope[name] = payload
+  script.onload?.()
+}
+
+test('浏览器：JSONP 优先且新浪 JSONP 成功 → source=index，不发起任何 CORS fetch', async () => {
+  const storage = mockStorage()
+  const mock = mockFetch(() => ({ ok: false, status: 503 })) // fetch 全部失败（模拟 CORS 被拦）
+  const browser = mockJsonpBrowser((url, script, scope) => {
+    if (url.includes('quotes.sina.cn') && url.includes('jsonp_v2.php')) {
+      setJsonpGlobal(url, INDEX_UPTREND.map((bar) => ({
+        day: bar.date,
+        open: String(bar.open),
+        high: String(bar.high),
+        low: String(bar.low),
+        close: String(bar.close),
+        volume: '100000',
+      })), scope, script)
+    } else {
+      script.onerror?.() // 腾讯 JSONP（WAF）失败
+    }
+  })
+  try {
+    const detail = await loadRegimeDetail([UP_BARS, UP_BARS, DOWN_BARS], { fetcher: globalThis.fetch, now: FIXED_NOW })
+    assert.equal(detail.info.source, 'index')
+    assert.equal(detail.error, null)
+    assert.equal(detail.info.asOf, INDEX_UPTREND.at(-1).date)
+    assert.equal(mock.calls.length, 0) // 浏览器里 JSONP 优先，成功路径没有任何 fetch
+    // 变量名注入：随机名分别出现在 _var= 与 var%20...= 中
+    assert.ok(browser.scripts.some((url) => url.includes('jsonp_v2.php/var%20__regime_sina_')))
+  } finally {
+    mock.restore()
+    browser.restore()
+    storage.restore()
+  }
+})
+
+test('浏览器：新浪 JSONP 失败 → 腾讯 JSONP（_var=）成功；失败路径才用 fetch', async () => {
+  const storage = mockStorage()
+  const mock = mockFetch(() => ({ ok: false, status: 503 }))
+  const browser = mockJsonpBrowser((url, script, scope) => {
+    if (url.includes('jsonp_v2.php')) {
+      script.onerror?.() // 新浪 JSONP 失败
+      return
+    }
+    if (url.includes('_var=')) {
+      setJsonpGlobal(url, {
+        code: 0,
+        data: { sh000300: { qfqday: INDEX_UPTREND.map((bar) => [bar.date, String(bar.open), String(bar.close), String(bar.high), String(bar.low), '1000']) } },
+      }, scope, script)
+      return
+    }
+    script.onerror?.()
+  })
+  try {
+    const detail = await loadRegimeDetail([UP_BARS], { fetcher: globalThis.fetch, now: FIXED_NOW })
+    assert.equal(detail.info.source, 'index')
+    assert.equal(detail.info.asOf, INDEX_UPTREND.at(-1).date)
+    assert.equal(mock.calls.length, 0)
+    assert.ok(browser.scripts.some((url) => url.includes('_var=__regime_tx_')))
+  } finally {
+    mock.restore()
+    browser.restore()
+    storage.restore()
+  }
+})
+
+test('浏览器：全部 JSONP/fetch 失败 → 宽度兜底（source=breadth）且 error 含 JSONP 原因', async () => {
+  const storage = mockStorage()
+  const mock = mockFetch(() => ({ ok: false, status: 503 }))
+  const browser = mockJsonpBrowser((url, script) => {
+    script.onerror?.()
+  })
+  try {
+    const detail = await loadRegimeDetail([DOWN_BARS, DOWN_BARS, UP_BARS], { fetcher: globalThis.fetch, now: FIXED_NOW })
+    assert.equal(detail.info.source, 'breadth')
+    assert.match(detail.error, /日线获取失败/)
+    assert.match(detail.error, /JSONP/)
+    // JSONP 全失败后仍会尝试 fetch（浏览器兜底），但最终退回宽度
+    assert.ok(mock.calls.length > 0)
+  } finally {
+    mock.restore()
+    browser.restore()
+    storage.restore()
+  }
+})
+
+test('JSONP 成功后清理全局变量（try/delete + 置 undefined，不残留）', async () => {
+  const storage = mockStorage()
+  const mock = mockFetch(() => ({ ok: false, status: 503 }))
+  let capturedName
+  const browser = mockJsonpBrowser((url, script, scope) => {
+    if (url.includes('jsonp_v2.php')) {
+      const match = /jsonp_v2\.php\/var%20([^=]+)=/.exec(url)
+      capturedName = decodeURIComponent(match[1])
+      setJsonpGlobal(url, INDEX_UPTREND.map((bar) => ({
+        day: bar.date,
+        open: String(bar.open),
+        high: String(bar.high),
+        low: String(bar.low),
+        close: String(bar.close),
+        volume: '100000',
+      })), scope, script)
+    } else {
+      script.onerror?.()
+    }
+  })
+  try {
+    await loadRegimeDetail([UP_BARS], { fetcher: globalThis.fetch, now: FIXED_NOW })
+    assert.ok(capturedName)
+    assert.equal(globalThis[capturedName], undefined) // 已清理（delete 或置 undefined）
+  } finally {
+    mock.restore()
+    browser.restore()
     storage.restore()
   }
 })

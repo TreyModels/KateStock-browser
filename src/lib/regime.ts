@@ -91,11 +91,16 @@ export const REGIME_BREADTH_BEAR = 40
 export const REGIME_BULL_MIN_SCORE = 5
 export const REGIME_BEAR_MAX_SCORE = 2
 
-/** 网络请求超时（毫秒）。 */
+/** 网络 / JSONP 请求超时（毫秒）。 */
 const FETCH_TIMEOUT_MS = 10_000
-const TENCENT_INDEX_URL = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq'
-const SINA_INDEX_URL =
+/** 腾讯 kline 主机：web.ifzq 常被 WAF 501，裸域 ifzq.gtimg.cn 常可用（task-33 部署修复）。 */
+const TENCENT_INDEX_HOSTS = ['web.ifzq.gtimg.cn', 'ifzq.gtimg.cn'] as const
+const TENCENT_INDEX_PARAMS = 'param=sh000300,day,,,320,qfq'
+/** 新浪日线 JSON（无 CORS 头，浏览器 fetch 会被拦）与 JSONP（script 标签跨域，浏览器首选）。 */
+const SINA_INDEX_JSON_URL =
   'https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=320'
+const SINA_INDEX_JSONP_ENDPOINT = 'https://quotes.sina.cn/cn/api/jsonp_v2.php'
+const SINA_INDEX_PARAMS = 'symbol=sh000300&scale=240&ma=no&datalen=320'
 const INDEX_SYMBOL = 'sh000300'
 const CACHE_KEY = 'katestock-market-regime-v1'
 const CACHE_VERSION = 1
@@ -224,6 +229,11 @@ interface RegimeMessages {
     sinaNotArray: string
     sinaFormat: string
     sinaDate: string
+    jsonpUnavailable: string
+    jsonpTimeout: string
+    jsonpScriptFailed: string
+    jsonpEmpty: string
+    jsonpInvalid: string
   }
 }
 
@@ -257,6 +267,11 @@ const MESSAGES: Record<RegimeLang, RegimeMessages> = {
       sinaNotArray: '新浪响应不是有效日线数组',
       sinaFormat: '新浪指数日线格式非法',
       sinaDate: '新浪指数日线日期非法',
+      jsonpUnavailable: '当前环境不支持 JSONP（仅浏览器）',
+      jsonpTimeout: 'JSONP 超时（10s）',
+      jsonpScriptFailed: 'JSONP script 加载失败',
+      jsonpEmpty: 'JSONP 未返回数据',
+      jsonpInvalid: 'JSONP 包裹格式非法',
     },
   },
   en: {
@@ -289,6 +304,11 @@ const MESSAGES: Record<RegimeLang, RegimeMessages> = {
       sinaNotArray: 'Sina response is not a valid daily-bar array',
       sinaFormat: 'Sina index daily bar has an invalid format',
       sinaDate: 'Sina index daily bar has an invalid date',
+      jsonpUnavailable: 'JSONP is not available in this environment (browser only)',
+      jsonpTimeout: 'JSONP timed out (10s)',
+      jsonpScriptFailed: 'JSONP script failed to load',
+      jsonpEmpty: 'JSONP returned no data',
+      jsonpInvalid: 'Invalid JSONP wrapper format',
     },
   },
 }
@@ -526,24 +546,156 @@ function barsFromSinaIndex(payload: unknown, t: RegimeMessages): Bar[] {
   return normalizeBars(bars)
 }
 
+/* ── JSONP 回退（浏览器跨域取数，task-33） ── */
+
+function tencentIndexUrl(host: string): string {
+  return `https://${host}/appstock/app/fqkline/get?${TENCENT_INDEX_PARAMS}`
+}
+
+function tencentIndexJsonpUrl(host: string, variableName: string): string {
+  return `${tencentIndexUrl(host)}&_var=${encodeURIComponent(variableName)}`
+}
+
+function sinaIndexJsonpUrl(variableName: string): string {
+  return `${SINA_INDEX_JSONP_ENDPOINT}/var%20${encodeURIComponent(variableName)}=/CN_MarketDataService.getKLineData?${SINA_INDEX_PARAMS}`
+}
+
+function randomVariableName(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`
+}
+
 /**
- * 拉沪深300 日线：腾讯优先，失败换新浪；都失败抛错（由调用方退回宽度）。
- * `lang` 只影响抛出的错误文案（默认 zh）。
+ * 解析腾讯 kline JSONP 文本：`var <name>={...};`（允许前置注释/空白、尾分号）。
+ * 返回解析后的 payload（交给 barsFromTencentIndex）。
+ */
+export function parseTencentKlineJsonp(text: string, variableName: string): unknown {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`(?:var\\s+)?${escaped}\\s*=\\s*([\\s\\S]*?)\\s*;?\\s*$`).exec(String(text ?? '').trim())
+  if (!match) throw new Error('Invalid JSONP wrapper format')
+  return JSON.parse(match[1])
+}
+
+/**
+ * 解析新浪 kline JSONP 文本：`var <name>=([...]);`（允许前置注释/空白、尾分号）。
+ * 返回解析后的数组（交给 barsFromSinaIndex）。
+ */
+export function parseSinaKlineJsonp(text: string, variableName: string): unknown {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`(?:var\\s+)?${escaped}\\s*=\\s*\\(([\\s\\S]*)\\)\\s*;?\\s*$`).exec(String(text ?? '').trim())
+  if (!match) throw new Error('Invalid JSONP wrapper format')
+  return JSON.parse(match[1])
+}
+
+/** 动态 script 注入并读取全局变量；10s 超时；严格模式下用 try/delete + 置 undefined 清理。 */
+function loadJsonpValue(url: string, variableName: string, t: RegimeMessages): Promise<unknown> {
+  if (typeof document === 'undefined' || typeof window === 'undefined') {
+    return Promise.reject(new Error(t.parse.jsonpUnavailable))
+  }
+  const globalScope = window as unknown as Record<string, unknown>
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    let settled = false
+    const cleanup = () => {
+      // script 里 `var <name>=...` 在 window 上生成不可配置属性，严格模式 delete 会抛 TypeError
+      try {
+        delete globalScope[variableName]
+      } catch {
+        globalScope[variableName] = undefined
+      }
+    }
+    const finish = (ok: boolean, error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      script.onload = null
+      script.onerror = null
+      script.remove()
+      const value = globalScope[variableName]
+      cleanup()
+      if (ok && value !== undefined) resolve(value)
+      else reject(error ?? new Error(t.parse.jsonpEmpty))
+    }
+    const timer = setTimeout(() => finish(false, new Error(t.parse.jsonpTimeout)), FETCH_TIMEOUT_MS)
+    script.src = url
+    script.async = true
+    script.onload = () => finish(true)
+    script.onerror = () => finish(false, new Error(t.parse.jsonpScriptFailed))
+    document.head.appendChild(script)
+  })
+}
+
+/* ── 单源尝试（fetch / JSONP） ── */
+
+async function fetchTencentIndexBars(fetcher: typeof fetch, t: RegimeMessages): Promise<Bar[]> {
+  let lastError: unknown
+  for (const host of TENCENT_INDEX_HOSTS) {
+    try {
+      return barsFromTencentIndex(await requestJson(tencentIndexUrl(host), fetcher), t)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Tencent index fetch failed')
+}
+
+async function fetchSinaIndexBars(fetcher: typeof fetch, t: RegimeMessages): Promise<Bar[]> {
+  return barsFromSinaIndex(await requestJson(SINA_INDEX_JSON_URL, fetcher), t)
+}
+
+async function jsonpTencentIndexBars(t: RegimeMessages): Promise<Bar[]> {
+  let lastError: unknown
+  for (const host of TENCENT_INDEX_HOSTS) {
+    const variableName = randomVariableName('__regime_tx')
+    try {
+      const value = await loadJsonpValue(tencentIndexJsonpUrl(host, variableName), variableName, t)
+      return barsFromTencentIndex(value, t)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Tencent index JSONP failed')
+}
+
+async function jsonpSinaIndexBars(t: RegimeMessages): Promise<Bar[]> {
+  const variableName = randomVariableName('__regime_sina')
+  const value = await loadJsonpValue(sinaIndexJsonpUrl(variableName), variableName, t)
+  return barsFromSinaIndex(value, t)
+}
+
+/**
+ * 拉沪深300 日线。顺序按环境区分：
+ * - Node（无 document）：fetch 腾讯(web→裸域) → fetch 新浪 → JSONP 腾讯 → JSONP 新浪；
+ * - 浏览器：JSONP 新浪 → JSONP 腾讯(web→裸域) → fetch 腾讯 → fetch 新浪。
+ *   浏览器里新浪 JSON 无 CORS、腾讯 WAF 页也无 CORS，fetch 会先在控制台产生 CORS 报错；
+ *   部署版实测（task-33）因此浏览器改为 JSONP 优先（与「fetch 优先」的 Node 顺序等价，仅为消除
+ *   控制台噪声并保证部署环境可用）。全部失败抛错，由调用方退回宽度。
  */
 export async function fetchIndexBars(fetcher: typeof fetch = fetch, lang: RegimeLang = 'zh'): Promise<Bar[]> {
   const t = messagesFor(lang)
-  let tencentError: unknown
-  try {
-    return barsFromTencentIndex(await requestJson(TENCENT_INDEX_URL, fetcher), t)
-  } catch (error) {
-    tencentError = error
+  const isBrowser = typeof document !== 'undefined' && typeof window !== 'undefined'
+  const attempts: Array<{ source: 'tencent' | 'sina'; run: () => Promise<Bar[]> }> = isBrowser
+    ? [
+        { source: 'sina', run: () => jsonpSinaIndexBars(t) },
+        { source: 'tencent', run: () => jsonpTencentIndexBars(t) },
+        { source: 'tencent', run: () => fetchTencentIndexBars(fetcher, t) },
+        { source: 'sina', run: () => fetchSinaIndexBars(fetcher, t) },
+      ]
+    : [
+        { source: 'tencent', run: () => fetchTencentIndexBars(fetcher, t) },
+        { source: 'sina', run: () => fetchSinaIndexBars(fetcher, t) },
+        { source: 'tencent', run: () => jsonpTencentIndexBars(t) },
+        { source: 'sina', run: () => jsonpSinaIndexBars(t) },
+      ]
+
+  const failures: Record<'tencent' | 'sina', string[]> = { tencent: [], sina: [] }
+  for (const attempt of attempts) {
+    try {
+      return await attempt.run()
+    } catch (error) {
+      failures[attempt.source].push(error instanceof Error ? error.message : String(error))
+    }
   }
-  try {
-    return barsFromSinaIndex(await requestJson(SINA_INDEX_URL, fetcher), t)
-  } catch (error) {
-    const message = (value: unknown) => (value instanceof Error ? value.message : String(value))
-    throw new Error(t.fetchError(message(tencentError), message(error)))
-  }
+  throw new Error(t.fetchError(failures.tencent.join('; ') || '-', failures.sina.join('; ') || '-'))
 }
 
 /* ─────────────────────────────────────────────────────────────
