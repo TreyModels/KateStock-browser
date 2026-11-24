@@ -2,6 +2,25 @@ import type { Bar } from '@/types'
 
 export type BacktestStrategyId = 'breakout' | 'pullback' | 'trend' | 'reversion'
 
+/** 成本参数（可配置；默认佣金万 2.5、最低 5 元/笔、卖出印花税 0.05%）。 */
+export interface BacktestCostOptions {
+  /** 佣金率（bps，1bp = 0.01%）；默认 2.5（万 2.5）。 */
+  commissionBps?: number
+  /** 单笔最低佣金（元）；默认 5。 */
+  minCommission?: number
+}
+
+export interface BacktestOptions {
+  /** 股票代码，用于判断板块涨跌停（主板 10% / 创业板科创板 20% / 北交所 30%）。缺省按主板 10%。 */
+  code?: string
+  /** 是否 ST（ST 主板 2026-07-06 起 10%，此前 5%；创业板/科创板 20%；北交所 30%）。 */
+  isSt?: boolean
+  /** 成本参数。 */
+  costs?: BacktestCostOptions
+  /** 初始资金（元）；默认 10 万。用于整手与最低佣金计算。 */
+  initialCapital?: number
+}
+
 export interface BacktestTrade {
   signalIndex: number
   entryIndex: number
@@ -10,8 +29,19 @@ export interface BacktestTrade {
   exitDate: string
   entryPrice: number
   exitPrice: number
+  /** 扣费后单笔收益率（%）。 */
   returnPct: number
   exitReason: string
+  /** 买入股数（100 股整数倍，便于核对整手约束）。 */
+  units?: number
+  /** 买入费用（佣金，元）。 */
+  entryFee?: number
+  /** 卖出费用（佣金 + 印花税，元）。 */
+  exitFee?: number
+  /** 本笔保护位（便于核对成交价）。 */
+  stop?: number
+  /** 本笔目标位（趋势策略为 Infinity）。 */
+  target?: number
 }
 
 export interface EquityPoint {
@@ -36,6 +66,12 @@ export interface BacktestResult {
   score: number
   currentReasons: string[]
   sampleNote: string
+  /** 因涨停买不到（两次尝试均失败）或资金不足 1 手而放弃入场的信号数。 */
+  unfilledEntries: number
+  /** 未成交原因（中文，便于回测结果页解释）。 */
+  unfilledReasons: string[]
+  /** 卖出遇跌停被顺延的次数（每次延迟卖出事件记 1）。 */
+  slippageWaits: number
 }
 
 export interface StoryFrame {
@@ -63,18 +99,177 @@ interface PendingEntry {
   signalIndex: number
   stop: number
   target: number
+  /** 已尝试次数（涨停买不到时顺延重试一次）。 */
+  attempts: number
 }
 
-interface Position extends PendingEntry {
+interface Position {
+  signalIndex: number
+  stop: number
+  target: number
   entryIndex: number
   entryPrice: number
   units: number
+  buyFee: number
 }
 
-const COST = 0.001
-const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+interface PendingExit {
+  kind: 'stop' | 'target' | 'close'
+  reason: string
+  /** 因跌停卖不掉而顺延到下一交易日。 */
+  delayed: boolean
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 交易成本 / 整手 / 涨跌停常量与纯函数
+ * ───────────────────────────────────────────────────────────── */
+
+/** 默认佣金率（bps）：万 2.5。 */
+export const DEFAULT_COMMISSION_BPS = 2.5
+/** 单笔最低佣金（元）：5。 */
+export const DEFAULT_MIN_COMMISSION = 5
+/** 印花税：卖出单边 0.05%（2023-08-28 起）。 */
+export const STAMP_DUTY_RATE = 0.0005
+/** 买入最小单位：100 股（科创板 200 股起，此处按全市场最常见的整手近似）。 */
+export const LOT_SIZE = 100
+/** 默认初始资金：10 万元。 */
+export const DEFAULT_INITIAL_CAPITAL = 100_000
+/** 主板 ST 涨跌幅放宽到 10% 的生效日。 */
+export const ST_MAIN_10_START = '2026-07-06'
+
+export const DEFAULT_COST_OPTIONS: Required<BacktestCostOptions> = {
+  commissionBps: DEFAULT_COMMISSION_BPS,
+  minCommission: DEFAULT_MIN_COMMISSION,
+}
+
+const average = (values: number[]) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0)
 const round = (value: number) => Math.round(value * 100) / 100
+const roundCent = (value: number) => Math.round(value * 100) / 100
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+
+function finitePositive(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+export interface LimitPctOptions {
+  isSt?: boolean
+  /** 交易日 YYYY-MM-DD；仅主板 ST 的历史规则（2026-07-06 前 5%）需要。 */
+  tradeDate?: string
+}
+
+/**
+ * 板块 / ST 涨跌幅限制（纯函数）：
+ * - 主板 10%（ST 2026-07-06 起 10%，此前 5%）
+ * - 创业板（300/301）10% → 20%
+ * - 科创板（688/689）20%
+ * - 北交所（4/8/92 开头）30%
+ */
+export function limitPctFor(code: string, options: LimitPctOptions = {}): number {
+  const normalized = String(code ?? '')
+    .replace(/^(sh|sz|bj)/i, '')
+    .trim()
+  const isStar = /^(688|689)/.test(normalized)
+  const isChiNext = /^(300|301)/.test(normalized)
+  const isBse = /^(8|4|92)/.test(normalized)
+
+  if (isStar || isChiNext) return 0.2
+  if (isBse) return 0.3
+  if (!options.isSt) return 0.1
+  const date = options.tradeDate ?? ''
+  // 主板 ST：2026-07-06 起 ±10%，此前 ±5%
+  return date && date < ST_MAIN_10_START ? 0.05 : 0.1
+}
+
+/** 买入费用：佣金 max(成交额 × bps, 最低佣金)。 */
+export function buyFeeFor(amount: number, costs: BacktestCostOptions = DEFAULT_COST_OPTIONS): number {
+  if (!finitePositive(amount)) return 0
+  const bps = costs.commissionBps ?? DEFAULT_COMMISSION_BPS
+  const minCommission = costs.minCommission ?? DEFAULT_MIN_COMMISSION
+  return Math.max((amount * bps) / 10_000, minCommission)
+}
+
+/** 卖出费用：佣金 max(成交额 × bps, 最低佣金) + 印花税 0.05%。 */
+export function sellFeeFor(amount: number, costs: BacktestCostOptions = DEFAULT_COST_OPTIONS): number {
+  if (!finitePositive(amount)) return 0
+  return buyFeeFor(amount, costs) + amount * STAMP_DUTY_RATE
+}
+
+/** 默认参数下某成交额的往返成本（bps），用于验证「1 万元往返约 15bp」。 */
+export function roundTripCostBps(amount: number, costs: BacktestCostOptions = DEFAULT_COST_OPTIONS): number {
+  if (!finitePositive(amount)) return 0
+  return ((buyFeeFor(amount, costs) + sellFeeFor(amount, costs)) / amount) * 10_000
+}
+
+/** bar 是否有可用于成交的开/收盘价（停牌/缺数据返回 false）。 */
+function isValidBar(bar: Bar | undefined): bar is Bar {
+  return bar !== undefined && finitePositive(bar.open) && finitePositive(bar.close)
+}
+
+function barHigh(bar: Bar): number {
+  return finitePositive(bar.high) ? bar.high : Math.max(bar.open, bar.close)
+}
+
+function barLow(bar: Bar): number {
+  return finitePositive(bar.low) ? bar.low : Math.min(bar.open, bar.close)
+}
+
+/** 向前找最近一根有效 bar 的收盘价（作为涨跌停判定的前收）。 */
+function previousCloseOf(bars: Bar[], index: number): number | undefined {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const bar = bars[cursor]
+    if (bar && finitePositive(bar.close)) return bar.close
+  }
+  return undefined
+}
+
+interface LimitPrices {
+  up: number
+  down: number
+}
+
+function limitPricesAt(bars: Bar[], index: number, limitPct: number): LimitPrices | undefined {
+  const previousClose = previousCloseOf(bars, index)
+  if (previousClose === undefined) return undefined
+  return {
+    up: roundCent(previousClose * (1 + limitPct)),
+    down: roundCent(previousClose * (1 - limitPct)),
+  }
+}
+
+const LIMIT_TOLERANCE = 0.01
+
+/** 开盘即涨停（含一字板）→ 买不到。 */
+function isLimitUp(bar: Bar, prices: LimitPrices | undefined): boolean {
+  if (!prices) return false
+  const high = barHigh(bar)
+  const low = barLow(bar)
+  const oneWord = high === low
+  return bar.open >= prices.up - LIMIT_TOLERANCE || (oneWord && high >= prices.up - LIMIT_TOLERANCE)
+}
+
+/** 开盘即跌停（含一字板）→ 卖不掉。 */
+function isLimitDown(bar: Bar, prices: LimitPrices | undefined): boolean {
+  if (!prices) return false
+  const high = barHigh(bar)
+  const low = barLow(bar)
+  const oneWord = high === low
+  return bar.open <= prices.down + LIMIT_TOLERANCE || (oneWord && low <= prices.down + LIMIT_TOLERANCE)
+}
+
+/** 现金可买的最大整手股数（不足 1 手返回 0）。 */
+function affordableUnits(cash: number, price: number, costs: BacktestCostOptions): number {
+  if (!finitePositive(cash) || !finitePositive(price)) return 0
+  const bps = costs.commissionBps ?? DEFAULT_COMMISSION_BPS
+  const minCommission = costs.minCommission ?? DEFAULT_MIN_COMMISSION
+  const perShare = price * (1 + bps / 10_000)
+  let units = Math.floor((cash - minCommission) / perShare / LOT_SIZE) * LOT_SIZE
+  while (units >= LOT_SIZE) {
+    const amount = units * price
+    if (amount + buyFeeFor(amount, costs) <= cash + 1e-6) return units
+    units -= LOT_SIZE
+  }
+  return 0
+}
 
 export const backtestMeta: Record<BacktestStrategyId, { name: string; subtitle: string; color: string }> = {
   breakout: { name: '突破跟随', subtitle: '前高突破 · 放量确认', color: '#d84a40' },
@@ -98,14 +293,14 @@ function indicatorsAt(bars: Bar[], index: number): Indicators {
   const rsi14 = losses === 0 ? (gains === 0 ? 50 : 100) : 100 - 100 / (1 + gains / losses)
   const ranges = bars.slice(Math.max(1, index - 13), index + 1).map((bar) => {
     const previousClose = bars[bars.indexOf(bar) - 1]?.close ?? bar.open
-    return Math.max(bar.high - bar.low, Math.abs(bar.high - previousClose), Math.abs(bar.low - previousClose))
+    return Math.max(barHigh(bar) - barLow(bar), Math.abs(barHigh(bar) - previousClose), Math.abs(barLow(bar) - previousClose))
   })
   const previousVolumes = bars.slice(Math.max(0, index - 5), index).map((bar) => bar.volume)
   return {
     ma5: average(closes.slice(-5)),
     ma10: average(closes.slice(-10)),
     ma20: average(closes.slice(-20)),
-    high20: Math.max(0, ...previous20.map((bar) => bar.high)),
+    high20: Math.max(0, ...previous20.map((bar) => barHigh(bar))),
     atr14: average(ranges) || current.close * 0.025,
     rsi14,
     volumeRatio: previousVolumes.length ? current.volume / average(previousVolumes) : 1,
@@ -158,78 +353,170 @@ function currentFit(id: BacktestStrategyId, bar: Bar, indicator: Indicators) {
   return { fitScore, reasons: [`超卖条件${signal ? '已满足' : '未满足'}：RSI14 ≤ 32 且价格低于 MA20`, `当前 RSI14 为 ${indicator.rsi14.toFixed(1)}`, ...common] }
 }
 
-export function runBacktest(id: BacktestStrategyId, bars: Bar[]): BacktestResult {
+/**
+ * 单只股票单策略回测。
+ *
+ * 相对旧实现的真实化（docs/research/china-rules.md 第 6.2 节）：
+ * - 止损出场价 = min(保护位, 次日开盘)；目标出场价 = max(目标位, 次日开盘)（跳空按可成交价）；
+ * - 涨停买不到：买入日开盘触及涨停（或一字板）→ 顺延下一交易日重试一次，仍不能买则记 unfilled；
+ * - 跌停卖不掉：卖出日开盘触及跌停（或一字板）→ 延迟卖出并记 slippage_wait；
+ * - 整手：股数 floor 到 100 股，不足 1 手不成交；
+ * - 成本：佣金 max(成交额 × bps, 最低 5 元) 双边 + 印花税 0.05% 卖出单边；
+ * - 停牌/缺 bar：当前 bar 无有效 open/close 则跳过（不产生成交）。
+ */
+export function runBacktest(id: BacktestStrategyId, bars: Bar[], options: BacktestOptions = {}): BacktestResult {
   const meta = backtestMeta[id]
+  const costs = options.costs ?? DEFAULT_COST_OPTIONS
+  const initialCapital = finitePositive(options.initialCapital) ? options.initialCapital : DEFAULT_INITIAL_CAPITAL
+  const code = options.code ?? ''
   if (bars.length < 45) {
     return {
       id, ...meta, equity: [], trades: [], totalReturnPct: 0, winRate: 0, maxDrawdownPct: 0,
       profitFactor: null, fitScore: 0, performanceScore: 0, score: 0,
       currentReasons: ['至少需要 45 根日线才能进行指标计算与回测'], sampleNote: '数据不足',
+      unfilledEntries: 0, unfilledReasons: [], slippageWaits: 0,
     }
   }
 
-  let cash = 1
+  let cash = initialCapital
+  let lastClose = finitePositive(bars[0]?.close) ? bars[0].close : 0
   let position: Position | undefined
-  let pending: PendingEntry | undefined
+  let pendingEntry: PendingEntry | undefined
+  let pendingExit: PendingExit | undefined
+  let unfilledEntries = 0
+  let slippageWaits = 0
+  const unfilledReasons: string[] = []
   const trades: BacktestTrade[] = []
   const equity: EquityPoint[] = bars.map((bar, index) => ({ index, date: bar.date, value: 1 }))
 
+  const markValue = () => {
+    const held = position && finitePositive(lastClose) ? position.units * lastClose : 0
+    return (cash + held) / initialCapital
+  }
+
   for (let index = 20; index < bars.length; index += 1) {
     const bar = bars[index]
+
+    // 停牌 / 缺 bar：没有有效开收盘价则跳过该 bar，不产生任何成交
+    if (!isValidBar(bar)) {
+      equity[index].value = markValue()
+      continue
+    }
+
     const indicator = indicatorsAt(bars, index)
+    lastClose = bar.close
+    const limitPct = limitPctFor(code, { isSt: options.isSt, tradeDate: bar.date })
+    const prices = limitPricesAt(bars, index, limitPct)
 
-    if (pending && !position) {
-      const entryPrice = bar.open * (1 + COST)
-      const levels = entryLevels(id, entryPrice, indicatorsAt(bars, pending.signalIndex))
-      position = {
-        ...pending,
-        ...levels,
-        entryIndex: index,
-        entryPrice,
-        units: cash / entryPrice,
+    // 1) 次日开盘执行买入（涨停买不到 → 顺延一次 → 放弃）
+    if (pendingEntry && !position) {
+      if (isLimitUp(bar, prices)) {
+        pendingEntry.attempts += 1
+        if (pendingEntry.attempts >= 2) {
+          unfilledEntries += 1
+          unfilledReasons.push(`涨停未能买入（信号日 ${bars[pendingEntry.signalIndex]?.date ?? ''}，已顺延一次）`)
+          pendingEntry = undefined
+        }
+      } else {
+        const entryPrice = bar.open
+        const levels = entryLevels(id, entryPrice, indicatorsAt(bars, pendingEntry.signalIndex))
+        const units = affordableUnits(cash, entryPrice, costs)
+        if (units < LOT_SIZE) {
+          // 不足 1 手：不成交
+          unfilledEntries += 1
+          unfilledReasons.push(`不足 1 手（信号日 ${bars[pendingEntry.signalIndex]?.date ?? ''}，可用资金 ${Math.floor(cash)} 元）`)
+          pendingEntry = undefined
+        } else {
+          const amount = units * entryPrice
+          const buyFee = buyFeeFor(amount, costs)
+          cash -= amount + buyFee
+          position = {
+            signalIndex: pendingEntry.signalIndex,
+            stop: levels.stop,
+            target: levels.target,
+            entryIndex: index,
+            entryPrice,
+            units,
+            buyFee,
+          }
+          pendingEntry = undefined
+        }
       }
-      pending = undefined
     }
 
+    // 2) 出场（T+1：entryIndex 之后才检查）
     if (position && index > position.entryIndex) {
-      let exitPrice: number | undefined
-      let exitReason = ''
-      if (bar.low <= position.stop) {
-        exitPrice = position.stop * (1 - COST)
-        exitReason = '触及保护位'
-      } else if (bar.high >= position.target) {
-        exitPrice = position.target * (1 - COST)
-        exitReason = '达到目标位'
-      } else if (shouldExitAtClose(id, bar, indicator, index - position.entryIndex)) {
-        exitPrice = bar.close * (1 - COST)
-        exitReason = '收盘退出条件'
-      } else if (index === bars.length - 1) {
-        exitPrice = bar.close * (1 - COST)
-        exitReason = '样本期末结算'
+      if (!pendingExit) {
+        const high = barHigh(bar)
+        const low = barLow(bar)
+        if (low <= position.stop) {
+          pendingExit = { kind: 'stop', reason: '触及保护位', delayed: false }
+        } else if (high >= position.target) {
+          pendingExit = { kind: 'target', reason: '达到目标位', delayed: false }
+        } else if (shouldExitAtClose(id, bar, indicator, index - position.entryIndex)) {
+          pendingExit = { kind: 'close', reason: '收盘退出条件', delayed: false }
+        } else if (index === bars.length - 1) {
+          pendingExit = { kind: 'close', reason: '样本期末结算', delayed: false }
+        }
       }
 
-      if (exitPrice !== undefined) {
-        const returnPct = (exitPrice / position.entryPrice - 1) * 100
-        cash = position.units * exitPrice
-        trades.push({
-          signalIndex: position.signalIndex,
-          entryIndex: position.entryIndex,
-          exitIndex: index,
-          entryDate: bars[position.entryIndex].date,
-          exitDate: bar.date,
-          entryPrice: round(position.entryPrice),
-          exitPrice: round(exitPrice),
-          returnPct,
-          exitReason,
-        })
-        position = undefined
+      if (pendingExit) {
+        const isLastBar = index === bars.length - 1
+        // 跌停卖不掉：顺延到下一交易日；样本末日按收盘估值强制结算
+        if (!isLastBar && isLimitDown(bar, prices)) {
+          if (!pendingExit.delayed) slippageWaits += 1
+          pendingExit.delayed = true
+        } else {
+          let exitPrice: number
+          if (pendingExit.delayed) {
+            exitPrice = isLastBar ? bar.close : bar.open
+          } else if (pendingExit.kind === 'stop') {
+            // 跳空低开时按实际可成交的开盘价
+            exitPrice = Math.min(position.stop, bar.open)
+          } else if (pendingExit.kind === 'target') {
+            // 跳空高开时按实际可成交的开盘价
+            exitPrice = Math.max(position.target, bar.open)
+          } else {
+            exitPrice = bar.close
+          }
+          if (!finitePositive(exitPrice)) exitPrice = bar.close
+
+          const reason = pendingExit.delayed
+            ? `${pendingExit.reason}（跌停顺延${isLastBar ? '，样本期末按收盘估值' : ''}）`
+            : pendingExit.reason
+          const sellAmount = position.units * exitPrice
+          const sellFee = sellFeeFor(sellAmount, costs)
+          cash += sellAmount - sellFee
+          const buyTotal = position.units * position.entryPrice + position.buyFee
+          const returnPct = buyTotal > 0 ? ((sellAmount - sellFee) / buyTotal - 1) * 100 : 0
+          trades.push({
+            signalIndex: position.signalIndex,
+            entryIndex: position.entryIndex,
+            exitIndex: index,
+            entryDate: bars[position.entryIndex].date,
+            exitDate: bar.date,
+            entryPrice: round(position.entryPrice),
+            exitPrice: round(exitPrice),
+            returnPct,
+            exitReason: reason,
+            units: position.units,
+            entryFee: round(position.buyFee),
+            exitFee: round(sellFee),
+            stop: round(position.stop),
+            target: Number.isFinite(position.target) ? round(position.target) : position.target,
+          })
+          position = undefined
+          pendingExit = undefined
+        }
       }
     }
 
-    if (!position && !pending && index < bars.length - 1 && hasSignal(id, bar, indicator)) {
-      pending = { signalIndex: index, ...entryLevels(id, bar.close, indicator) }
+    // 3) 收盘出信号：只能用当日及之前的数据，次日开盘执行
+    if (!position && !pendingEntry && index < bars.length - 1 && hasSignal(id, bar, indicator)) {
+      pendingEntry = { signalIndex: index, ...entryLevels(id, bar.close, indicator), attempts: 0 }
     }
-    equity[index].value = position ? position.units * bar.close : cash
+
+    equity[index].value = markValue()
   }
 
   const totalReturnPct = (equity.at(-1)!.value - 1) * 100
@@ -264,11 +551,14 @@ export function runBacktest(id: BacktestStrategyId, bars: Bar[]): BacktestResult
     score,
     currentReasons: fit.reasons,
     sampleNote,
+    unfilledEntries,
+    unfilledReasons,
+    slippageWaits,
   }
 }
 
-export function runAllBacktests(bars: Bar[]) {
-  return (Object.keys(backtestMeta) as BacktestStrategyId[]).map((id) => runBacktest(id, bars))
+export function runAllBacktests(bars: Bar[], options: BacktestOptions = {}) {
+  return (Object.keys(backtestMeta) as BacktestStrategyId[]).map((id) => runBacktest(id, bars, options))
 }
 
 export function buildStoryFrame(result: BacktestResult, bars: Bar[], index: number): StoryFrame {
