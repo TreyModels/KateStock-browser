@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowDownToLine, ArrowUpRight, BarChart3, BookOpen, ChevronRight,
   Database, Gauge, History, LayoutDashboard, List, LoaderCircle,
-  Plus, RefreshCw, Search, Settings, ShieldCheck, Smartphone, Trash2, Upload,
+  FileDown, Plus, RefreshCw, Search, Settings, ShieldCheck, Smartphone, Trash2, Upload,
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -23,9 +23,11 @@ import { MarketStatusBar } from '@/components/live/MarketStatusBar'
 import { isLivePricePhase } from '@/components/live/quote-utils'
 import { useLiveAlerts } from '@/hooks/useLiveAlerts'
 import { useLiveQuotes } from '@/hooks/useLiveQuotes'
+import { useRegime } from '@/hooks/useRegime'
 import { useLocalData } from '@/hooks/useLocalData'
 import { getMarketPhase } from '@/lib/live'
 import { isHoldingStrategy } from '@/lib/live-signals'
+import { readRegimeCache } from '@/lib/regime'
 import { fetchQuotes } from '@/lib/market'
 import { generateStrategy } from '@/lib/strategy'
 import type { MarketPhase, Quote, Stock, StockStatus } from '@/types'
@@ -63,6 +65,7 @@ function App() {
   const [resetOpen, setResetOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const zipRef = useRef<HTMLInputElement>(null)
+  const portfolioImportRef = useRef<HTMLInputElement>(null)
   const [report, setReport] = useState<Snapshot | null>(readCachedSnapshot)
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState(false)
@@ -77,6 +80,7 @@ function App() {
   const buyCount = strategies.filter((item) => item.action === 'breakout' || item.action === 'pullback').length
   const riskCount = strategies.filter((item) => item.action === 'reduce' || item.action === 'stop').length
   const holdingCount = data.stocks.filter((stock) => stock.status === 'holding').length
+  const hasPersonalStocks = data.stocks.length > 0
   const dateText = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
 
   /* ── 盘中层接线：报价代码优先取个人清单，没有清单时取公开快照的代码 ── */
@@ -102,6 +106,43 @@ function App() {
 
   const { liveQuotes, updatedAt: liveUpdatedAt, lastAttemptAt: liveLastAttemptAt, loading: liveLoading, errors: liveErrors, refresh: refreshLive } = useLiveQuotes(liveCodes, { enabled: liveAutoRefresh || manualLiveRefresh })
   const { alerts, dismiss, clear, permission, requestPermission, soundEnabled, toggleSound } = useLiveAlerts(strategies, liveQuotes)
+
+  /* ── 大盘状态 → 页面主题 ────────────────────────────────────
+   * 广度样本优先用公开清单（29 只），没有快照时退回本地清单日线。
+   * 首帧默认中性（震荡市）配色；缓存命中时同步读缓存先上主题，刷新不闪。
+   * 只在 documentElement 上写 data-regime，颜色完全由 CSS 变量驱动；
+   * 涨跌红绿（.market-up/.market-down）是固定值，不随主题变化。 */
+  const regimeBars = useMemo(() => {
+    const publicQuotes = report ? Object.values(report.quotes) : []
+    const source = publicQuotes.length ? publicQuotes : Object.values(data.quotes)
+    return source.map((quote) => quote.bars).filter((bars) => bars.length > 0)
+  }, [report, data.quotes])
+  const { regime: regimeDetail, loading: regimeLoading, error: regimeError, refresh: refreshRegime } = useRegime(regimeBars)
+  const cachedRegime = useMemo(() => readRegimeCache()?.info.regime, [])
+  const activeRegime = regimeDetail?.regime ?? cachedRegime ?? 'range'
+  const appliedRegimeRef = useRef<string | undefined>(undefined)
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    const previous = appliedRegimeRef.current
+    appliedRegimeRef.current = activeRegime
+    root.dataset.regime = activeRegime
+    if (previous === undefined || previous === activeRegime) return
+    root.classList.add('theme-switching')
+    const timer = window.setTimeout(() => root.classList.remove('theme-switching'), 400)
+    return () => window.clearTimeout(timer)
+  }, [activeRegime])
+  const regimeInfo = {
+    regime: regimeDetail?.regime,
+    confidence: regimeDetail?.confidence,
+    asOf: regimeDetail?.asOf,
+    source: regimeDetail?.source,
+    evidence: regimeDetail?.evidence,
+    breadthPct: regimeDetail?.breadthPct,
+    loading: regimeLoading,
+    error: regimeError,
+    refresh: refreshRegime,
+    sampleSize: report ? Object.keys(report.quotes).length : undefined,
+  }
 
   // 最近报价时间只取 provider 的行情时间（P1-7）：优先 hook 的 updatedAt（本批成功报价的最新 provider 时间），
   // 本轮全部失败时回落到已展示报价里的最新 provider 时间；两者都不是抓取时间，无报价时显示「—」。
@@ -236,6 +277,25 @@ function App() {
     toast.success('备份已导出')
   }
 
+  // 下载 public/templates/portfolio.example.md；离线/404 时给 toast，不静默失败。
+  const downloadTemplate = async () => {
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}templates/portfolio.example.md`, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`模板获取失败：${response.status}`)
+      const url = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'portfolio.example.md'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      toast.success('模板已下载，填好后在今日页或「我的」导入')
+    } catch {
+      toast.error('模板下载失败，请检查网络后重试')
+    }
+  }
+
   const importData = async (file?: File) => {
     if (!file) return
     try {
@@ -312,9 +372,36 @@ function App() {
                 autoRefresh={liveAutoRefresh}
                 onToggleAutoRefresh={() => setLiveAutoRefresh((value) => !value)}
                 onRefresh={requestLiveRefresh}
+                regimeInfo={regimeInfo}
               />
               {data.goldValueCny !== undefined && <section className="report-status"><strong>黄金产品 · 手动参考价值</strong><p>¥{money.format(data.goldValueCny)} · 非实时；未确认产品代码</p></section>}
               <ReportStatus report={report} loading={reportLoading} cached={reportCached} error={reportError} onRetry={() => void loadReport()} />
+              {!hasPersonalStocks && (
+                <section className="private-import-card" aria-labelledby="private-import-title">
+                  <span className="section-kicker">PRIVATE PORTFOLIO</span>
+                  <h2 id="private-import-title">导入你的持仓清单（只存本机，不上传）</h2>
+                  <p className="private-import-note">文件含私人财务信息，勿提交到 GitHub；导入后只保存在当前浏览器。</p>
+                  <div className="private-import-actions">
+                    <button type="button" className="button-primary" onClick={() => portfolioImportRef.current?.click()}>
+                      <Upload size={17} aria-hidden="true" />导入清单文件
+                    </button>
+                    <button type="button" className="button-secondary" onClick={() => void downloadTemplate()}>
+                      <FileDown size={17} aria-hidden="true" />下载模板
+                    </button>
+                  </div>
+                  <input
+                    ref={portfolioImportRef}
+                    type="file"
+                    accept=".zip,.json,.md,.txt,text/plain,text/markdown,application/json,application/zip"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      event.target.value = ''
+                      void importPortfolio(file)
+                    }}
+                  />
+                </section>
+              )}
               <PublicStocks report={report} stocks={data.stocks} onImport={() => setView('settings')} liveQuotes={liveQuotes} liveErrors={liveErrors} phase={phase} />
               <ResearchSettings />
               <section className="briefing-panel">
@@ -338,7 +425,7 @@ function App() {
               <div className="today-grid">
                 <section>
                   <div className="section-heading">
-                    <div><span className="section-kicker">TODAY'S SIGNALS</span><h2>今日优先清单</h2></div>
+                    <div><span className="section-kicker">TODAY'S SIGNALS</span><h2>今日优先清单{hasPersonalStocks && <span className="privacy-badge">本地保存 · 不上传</span>}</h2></div>
                     <span className="data-stamp">{liveLoading ? <LoaderCircle size={15} className="spin" /> : isLivePricePhase(phase) && liveSuccessCount ? <Activity size={15} /> : <Database size={15} />}{isLivePricePhase(phase) && liveSuccessCount ? `盘中 ${liveSuccessCount} 只${liveFailedCodes.length ? ` · 未刷新 ${liveFailedCodes.length}` : ''}` : strategies.length ? '策略已计算' : '等待行情'}</span>
                   </div>
                   <div className="filter-tabs" role="tablist" aria-label="策略信号筛选">
@@ -387,7 +474,7 @@ function App() {
           {view === 'stocks' && (
             <section className="standard-page">
               <div className="page-heading">
-                <div><span className="section-kicker">MY UNIVERSE</span><h1>我的股票</h1><p>持仓、自选与历史记录分开管理。</p></div>
+                <div><span className="section-kicker">MY UNIVERSE</span><h1>我的股票{hasPersonalStocks && <span className="privacy-badge">本地保存 · 不上传</span>}</h1><p>持仓、自选与历史记录分开管理。</p></div>
                 <button className="button-primary desktop-action" onClick={openAdd}><Plus size={17} />添加股票</button>
               </div>
               <MarketStatusBar
@@ -402,6 +489,7 @@ function App() {
                 autoRefresh={liveAutoRefresh}
                 onToggleAutoRefresh={() => setLiveAutoRefresh((value) => !value)}
                 onRefresh={requestLiveRefresh}
+                regimeInfo={regimeInfo}
                 compact
               />
               <div className="stock-toolbar">
@@ -488,12 +576,13 @@ function App() {
                   <div className="data-actions">
                     <button className="button-secondary" onClick={exportData}><ArrowDownToLine size={17} />导出完整备份</button>
                     <button className="button-secondary" onClick={() => { const url = URL.createObjectURL(new Blob([portfolioMarkdown(data)], { type: 'text/markdown;charset=utf-8' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'stocks.md'; document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }}><ArrowDownToLine size={17} />导出 Markdown 清单</button>
+                    <button className="button-secondary" onClick={() => void downloadTemplate()}><FileDown size={17} />下载清单模板</button>
                     <button className="button-secondary" onClick={() => fileRef.current?.click()}><Upload size={17} />导入备份</button>
                     <button className="button-secondary" onClick={() => zipRef.current?.click()}><Upload size={17} />导入清单文件</button>
                     <input ref={zipRef} type="file" accept=".zip,.json,.md,.txt,text/plain,text/markdown,application/json,application/zip" className="hidden" onChange={(event) => void importPortfolio(event.target.files?.[0])} />
                     <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => void importData(event.target.files?.[0])} />
                   </div>
-                  <p className="settings-note">JSON 备份导入会替换当前数据，请先导出。清单支持 JSON、Markdown、文本或 ZIP（内含 stocks.json / stocks.md / stocks.txt），只添加新股票，已有记录和黄金价值不会覆盖。ZIP 中的其他文件（包括密钥）会被忽略。Markdown 包含私人财务信息，请妥善保存。定时 AI 密钥须在 GitHub Actions 机密中单独设置。</p>
+                  <p className="settings-note">JSON 备份导入会替换当前数据，请先导出。清单支持 JSON、Markdown、文本或 ZIP（内含 stocks.json / stocks.md / stocks.txt），只添加新股票，已有记录和黄金价值不会覆盖。ZIP 中的其他文件（包括密钥）会被忽略。Markdown 包含私人财务信息，请妥善保存。定时 AI 密钥须在 GitHub Actions 机密中单独设置。清理浏览器数据前先导出备份。</p>
                   <button className="text-button danger-text" onClick={() => setResetOpen(true)}><History size={15} />清空当前设备数据</button>
                 </section>
               </div>

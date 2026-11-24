@@ -26,3 +26,16 @@ dist-ssr
 # Python cache and generated market reports
 __pycache__/
 *.pyc
+
+# 私人持仓清单：绝不入库（在 App 里导入，只存浏览器本地）
+portfolio*.md
+portfolio*.json
+holdings*.md
+holdings*.json
+positions*.md
+positions*.json
+stocks.md
+stocks.json
+*.private.md
+private/
+!public/templates/portfolio.example.md

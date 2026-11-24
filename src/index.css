@@ -19,28 +19,70 @@
     --card-foreground: var(--ink-900);
     --popover: 0.992 0.003 110;
     --popover-foreground: var(--ink-900);
-    --primary: var(--red-600);
-    --primary-foreground: 0.985 0.006 70;
+
+    /* ── 动态主题（大盘状态）──────────────────────────────────
+     * 默认值 = 中性「震荡市」配色，首帧不会闪红；data-regime 由 App 按 useRegime 写入。
+     * 只驱动强调色/边框/顶部光晕；涨跌红绿由 .market-up/.market-down 的固定色值保证，
+     * 不随主题变化。 */
+    --theme-primary: 0.52 0.09 70;
+    --theme-primary-foreground: 0.992 0.008 90;
+    --theme-accent: 0.94 0.035 80;
+    --theme-accent-foreground: 0.42 0.07 65;
+    --theme-border: 0.884 0.014 95;
+    --theme-glow: oklch(0.78 0.1 80 / 0.16);
+
+    --primary: var(--theme-primary);
+    --primary-foreground: var(--theme-primary-foreground);
     --secondary: var(--paper-100);
     --secondary-foreground: var(--ink-900);
     --muted: var(--paper-100);
     --muted-foreground: var(--ink-600);
-    --accent: var(--red-100);
-    --accent-foreground: var(--red-600);
+    --accent: var(--theme-accent);
+    --accent-foreground: var(--theme-accent-foreground);
     --destructive: var(--red-600);
     --destructive-foreground: 0.985 0.006 70;
-    --border: 0.884 0.012 110;
+    --border: var(--theme-border);
     --input: 0.86 0.014 110;
-    --ring: var(--red-600);
+    --ring: var(--theme-primary);
     --radius: 0.75rem;
     --sidebar-background: 0.985 0.004 110;
     --sidebar-foreground: var(--ink-900);
-    --sidebar-primary: var(--red-600);
-    --sidebar-primary-foreground: 0.985 0.006 70;
+    --sidebar-primary: var(--theme-primary);
+    --sidebar-primary-foreground: var(--theme-primary-foreground);
     --sidebar-accent: var(--paper-100);
     --sidebar-accent-foreground: var(--ink-900);
     --sidebar-border: var(--border);
-    --sidebar-ring: var(--red-600);
+    --sidebar-ring: var(--theme-primary);
+  }
+
+  /* 牛市：暖砖红强调（A 股涨为红，保持与涨色同族但更沉稳） */
+  html[data-regime="bull"] {
+    --theme-primary: 0.565 0.185 28;
+    --theme-primary-foreground: 0.985 0.006 70;
+    --theme-accent: 0.93 0.035 28;
+    --theme-accent-foreground: 0.46 0.15 28;
+    --theme-border: 0.884 0.016 35;
+    --theme-glow: oklch(0.72 0.14 30 / 0.17);
+  }
+
+  /* 震荡市：中性琥珀/沙（也是首帧默认色） */
+  html[data-regime="range"] {
+    --theme-primary: 0.52 0.09 70;
+    --theme-primary-foreground: 0.992 0.008 90;
+    --theme-accent: 0.94 0.035 80;
+    --theme-accent-foreground: 0.42 0.07 65;
+    --theme-border: 0.884 0.014 95;
+    --theme-glow: oklch(0.78 0.1 80 / 0.16);
+  }
+
+  /* 熊市：青灰/墨绿低饱和冷色 */
+  html[data-regime="bear"] {
+    --theme-primary: 0.45 0.06 195;
+    --theme-primary-foreground: 0.985 0.006 110;
+    --theme-accent: 0.92 0.018 200;
+    --theme-accent-foreground: 0.37 0.045 195;
+    --theme-border: 0.884 0.012 200;
+    --theme-glow: oklch(0.72 0.05 195 / 0.15);
   }
 
   * { @apply border-border; }
@@ -62,5 +104,5 @@
     outline: 3px solid oklch(var(--ring) / 0.35);
     outline-offset: 2px;
   }
-  ::selection { background: oklch(var(--red-100)); color: oklch(var(--ink-900)); }
+  ::selection { background: oklch(var(--accent)); color: oklch(var(--ink-900)); }
 }

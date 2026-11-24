@@ -3,6 +3,8 @@ import { Activity, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { phaseLabel } from '@/lib/live'
 import type { MarketPhase } from '@/types'
+import { RegimeBadge } from './RegimeBadge'
+import type { RegimeInfo } from './RegimeBadge'
 import { formatBeijingClock, formatDataAge, isLivePricePhase } from './quote-utils'
 
 const phaseNotes: Record<MarketPhase, string> = {
@@ -29,6 +31,8 @@ export interface MarketStatusBarProps {
   retainedCount: number
   /** 订阅代码数 */
   covered: number
+  /** 大盘状态徽标数据（useRegime）；未提供时不渲染徽标 */
+  regimeInfo?: RegimeInfo
   autoRefresh: boolean
   onToggleAutoRefresh: () => void
   onRefresh: () => void
@@ -48,6 +52,7 @@ export function MarketStatusBar({
   successCount,
   retainedCount,
   covered,
+  regimeInfo,
   autoRefresh,
   onToggleAutoRefresh,
   onRefresh,
@@ -74,6 +79,7 @@ export function MarketStatusBar({
             <span className="phase-dot" aria-hidden="true" />
             {phaseLabel(phase)}
           </span>
+          {regimeInfo && <RegimeBadge info={regimeInfo} />}
           <span className={`market-status-note${staleInLivePhase ? ' market-status-stale' : ''}`}>{staleInLivePhase ? '盘中报价可能延迟，请注意数据年龄' : phaseNotes[phase]}</span>
         </div>
         <div className="market-status-meta">

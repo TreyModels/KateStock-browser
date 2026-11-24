@@ -423,7 +423,7 @@
  * ───────────────────────────────────────────────────────────── */
 
 /* 盘中状态条 */
-.market-status { display: grid; gap: 10px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid oklch(var(--border)); border-radius: 16px; background: oklch(var(--card)); }
+.market-status { display: grid; gap: 10px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid oklch(var(--border)); border-radius: 16px; background: oklch(var(--card)); background-image: linear-gradient(135deg, var(--theme-glow) 0%, transparent 62%); }
 .market-status-compact { margin-bottom: 14px; padding: 12px 14px; }
 .market-status-main { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .market-status-phase { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
@@ -537,4 +537,94 @@
   .live-price-card .live-price-number { font-size: 20px; }
   .market-status { padding: 12px; }
   .live-alerts-panel { padding: 16px; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 大盘状态徽标 + 动态主题过渡
+ * 主题色只来自 index.css 的 --theme-* 变量；涨跌红绿固定在
+ * .market-up / .market-down，不参与主题切换。
+ * ───────────────────────────────────────────────────────────── */
+
+/* 按钮本体至少 44px 触控高度；负外边距让视觉行高保持 28px（不撑高状态条） */
+.regime-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  max-width: 100%;
+  margin-block: -8px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+}
+.regime-pill {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid oklch(var(--accent-foreground) / .28);
+  border-radius: 999px;
+  background: oklch(var(--accent));
+  color: oklch(var(--accent-foreground));
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+  transition: background-color 360ms ease, border-color 360ms ease, color 360ms ease;
+}
+.regime-pill svg { flex-shrink: 0; }
+.regime-label { white-space: nowrap; }
+.regime-confidence { padding-left: 7px; border-left: 1px solid oklch(var(--accent-foreground) / .3); font-weight: 550; white-space: nowrap; }
+/* 320 窄屏允许两行，不挤压状态条其余内容 */
+@media (max-width: 380px) {
+  .regime-pill { white-space: normal; }
+  .regime-confidence { padding-left: 0; border-left: 0; }
+}
+
+/* 详情弹窗 */
+.regime-dialog { max-width: 560px !important; }
+.regime-dialog-headline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.regime-dialog-headline svg { color: oklch(var(--primary)); }
+.regime-dialog-headline strong { font-size: 20px; }
+.regime-dialog-headline span { color: oklch(var(--muted-foreground)); font-size: 12px; }
+.regime-meter { height: 8px; margin-bottom: 14px; overflow: hidden; border-radius: 999px; background: oklch(var(--secondary)); }
+.regime-meter span { display: block; height: 100%; border-radius: 999px; background: oklch(var(--primary)); transition: width 360ms ease; }
+.regime-facts { display: grid; gap: 8px; margin: 0 0 14px; padding: 12px; border-radius: 10px; background: oklch(var(--secondary)); }
+.regime-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
+.regime-facts span { color: oklch(var(--muted-foreground)); font-size: 12px; }
+.regime-facts strong { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.regime-evidence-title { margin: 0 0 6px; font-size: 14px; font-weight: 650; }
+.regime-evidence { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.regime-evidence li { position: relative; padding-left: 12px; color: oklch(var(--foreground) / .82); font-size: 13px; line-height: 1.7; }
+.regime-evidence li::before { position: absolute; left: 0; top: .62em; width: 5px; height: 5px; border-radius: 50%; background: oklch(var(--primary)); content: ""; }
+.regime-status-line { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: oklch(var(--foreground) / .82); font-size: 13px; line-height: 1.6; }
+.regime-status-line svg { flex-shrink: 0; }
+.regime-error { color: #9a4c08; }
+.regime-dialog-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+.regime-footnote { margin: 10px 0 0; color: oklch(var(--muted-foreground)); font-size: 11px; line-height: 1.7; }
+
+/* 主题切换的 360ms 颜色过渡：只在切换瞬间挂 html.theme-switching，避免影响平时 hover 手感 */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow, outline-color;
+  transition-duration: 360ms;
+  transition-timing-function: ease;
+  transition-delay: 0s;
+}
+
+/* ── 私人持仓导入入口（只存本机）── */
+.private-import-card { margin-bottom: 18px; padding: 20px; border: 1px dashed oklch(var(--border)); border-radius: 16px; background: oklch(var(--card)); }
+.private-import-card h2 { margin: 4px 0 8px; font-size: clamp(20px, 4.5vw, 26px); font-weight: 720; letter-spacing: -.03em; line-height: 1.3; }
+.private-import-note { margin: 0; color: oklch(var(--muted-foreground)); font-size: 13px; line-height: 1.7; }
+.private-import-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.private-import-actions .button-primary, .private-import-actions .button-secondary { min-height: 44px; }
+.privacy-badge { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 1px 8px; border: 1px solid oklch(var(--border)); border-radius: 999px; background: oklch(var(--secondary)); color: oklch(var(--muted-foreground)); font-size: 10px; font-weight: 550; letter-spacing: 0; line-height: 1.8; vertical-align: middle; white-space: nowrap; }
+@media (max-width: 380px) {
+  .private-import-card { padding: 16px; }
+  .private-import-actions > button { flex: 1 1 100%; }
+  .privacy-badge { margin-left: 6px; }
 }
