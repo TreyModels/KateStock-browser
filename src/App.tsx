@@ -39,6 +39,14 @@ import type { MarketPhase, Quote, Stock, StockStatus, Strategy, StrategyAction }
 import './App.css'
 
 type View = 'today' | 'stocks' | 'backtest' | 'rules' | 'settings' | 'library'
+
+declare global {
+  interface Window {
+    __BUILD__?: { id: string; sha: string; time: string }
+  }
+}
+
+const buildInfo = typeof window !== 'undefined' ? window.__BUILD__ : undefined
 type SignalFilter = 'all' | 'buy' | 'risk' | 'wait'
 
 const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
@@ -59,6 +67,7 @@ function App() {
   const { data, setData, resetData } = useLocalData()
   const [view, setView] = useState<View>('today')
   const [signalFilter, setSignalFilter] = useState<SignalFilter>('all')
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [rankingSelection, setRankingSelection] = useState<{ action: StrategyAction; id: string } | null>(null)
   const strategyListRef = useRef<HTMLElement>(null)
   const [stockFilter, setStockFilter] = useState<'all' | StockStatus>('all')
@@ -219,6 +228,31 @@ function App() {
     const timer = window.setTimeout(() => setManualLiveRefresh(false), 0)
     return () => window.clearTimeout(timer)
   }, [manualLiveRefresh, liveLoading])
+
+  const buildLabel = buildInfo && !buildInfo.id.includes('__') ? `v${buildInfo.sha} · ${buildInfo.time}` : 'vdev'
+  // 手动检查新版本：先更新 SW、清掉旧 cache，再 reload，给用户一个「自救」入口。
+  const checkForUpdates = async () => {
+    setCheckingUpdate(true)
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations()
+        await Promise.all(registrations.map(async (registration) => {
+          try { await registration.update() } catch { /* 离线时忽略 */ }
+          try { registration.waiting?.postMessage('SKIP_WAITING') } catch { /* 忽略 */ }
+        }))
+      }
+      if (typeof caches !== 'undefined') {
+        const keys = await caches.keys()
+        await Promise.all(keys.map((key) => caches.delete(key)))
+      }
+      toast.success(t('version.updated'))
+    } catch {
+      toast.error(t('version.failed'))
+    } finally {
+      setCheckingUpdate(false)
+      window.setTimeout(() => window.location.reload(), 400)
+    }
+  }
 
   const requestLiveRefresh = () => {
     if (liveAutoRefresh) {
@@ -665,6 +699,13 @@ function App() {
                   <button className="text-button danger-text" onClick={() => setResetOpen(true)}><History size={15} />{t('settings.clearData')}</button>
                 </section>
               </div>
+              <section className="app-version" aria-label={t('version.current')}>
+                <div><span>{t('version.current')}</span><strong>{buildLabel}</strong></div>
+                <button type="button" className="button-secondary" onClick={() => void checkForUpdates()} disabled={checkingUpdate}>
+                  <RefreshCw size={16} className={checkingUpdate ? 'spin' : ''} />
+                  {checkingUpdate ? t('version.checking') : t('version.check')}
+                </button>
+              </section>
             </section>
           )}
         </main>

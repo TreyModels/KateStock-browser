@@ -1,4 +1,4 @@
-const CACHE = 'ashare-strategy-shell-v3'
+const CACHE = 'ashare-strategy-shell-6201b63-20261124-1924'
 const PREFIX = 'ashare-strategy-shell-'
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
@@ -31,4 +31,7 @@ self.addEventListener('fetch', event => {
     if (request.mode === 'navigate') return (await caches.match('./')) || Response.error()
     return Response.error()
   }))
+})
+self.addEventListener('message', event => {
+  if (event.data === 'SKIP_WAITING') self.skipWaiting()
 })

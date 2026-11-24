@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "refresh": "node --experimental-strip-types scripts/refresh-snapshot.mjs"
+    "refresh": "node --experimental-strip-types scripts/refresh-snapshot.mjs",
+    "prebuild": "node scripts/stamp-build.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

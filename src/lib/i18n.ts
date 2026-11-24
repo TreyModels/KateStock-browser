@@ -364,6 +364,11 @@ const zh: Record<string, string> = {
   'detail.priceClosed': '当前显示收盘价或最近报价，不是实时行情。',
   'detail.copy': '复制今日计划',
   'detail.copied': '已复制计划',
+  'version.current': '当前版本',
+  'version.check': '检查新版本',
+  'version.checking': '检查中…',
+  'version.updated': '已检查并清理旧缓存，正在刷新…',
+  'version.failed': '检查更新失败，将为你在刷新后重试',
   'disclaimer.short': '不构成投资建议。',
   'disclaimer.dataNote': '数据为历史日线，可能延迟；策略仅为规则化研究参考，不构成收益承诺。',
 }
@@ -721,6 +726,11 @@ const en: Record<string, string> = {
   'detail.priceClosed': 'Showing a closing or recent quote, not a live price.',
   'detail.copy': 'Copy today plan',
   'detail.copied': 'Plan copied',
+  'version.current': 'Version',
+  'version.check': 'Check for updates',
+  'version.checking': 'Checking…',
+  'version.updated': 'Checked and cleared old caches; reloading…',
+  'version.failed': 'Update check failed; reloading to retry',
   'disclaimer.short': 'Not investment advice.',
   'disclaimer.dataNote': 'Data is historical daily bars and may be delayed; plans are rule-based research references only and are not return promises.',
 }
