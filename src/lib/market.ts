@@ -126,11 +126,20 @@ function fetchJsonp(code: string): Promise<Quote> {
  *   GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,320,qfq
  *   → 200，`access-control-allow-origin: *`，body：
  *     { code:0, data: { sh600519: { qfqday: [[date,open,close,high,low,volume], ...], qt: {...} } } }
- *   当天最后一条为 2026-11-23 收盘（前复权），qt[symbol][30] 是北京时间实时快照时间。
+ *   当天最后一条为 2026-11-23 收盘，qt[symbol][30] 是北京时间实时快照时间。
+ *
+ * **复权口径按标的类型选择（task-29 数据正确性修复）**：ETF（510/511/512/513/515/516/518/159/588 开头）
+ *   使用 `hfq`（后复权，响应 key 为 hfqday），个股使用 `qfq`（前复权，key 为 qfqday）。原因：
+ *   rotation-research 实测腾讯 qfq 对 ETF 失真（510300 2014-09→12 算出 +74%，真实 +49%；510880 早期
+ *   波动率 107%），ETF 的均线/ATR/触发价必须基于 hfq。新浪接口无复权参数，回退时如实标注「不复权」。
  * 注意：日线的 volume 单位与东财一致为「手」，amount 该接口不提供（置 0）。
  * ───────────────────────────────────────────────────────────── */
 
-const TENCENT_KLINE_URL = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+/**
+ * 腾讯 fqkline 主机列表：`web.ifzq.gtimg.cn` 被 WAF 返回 501 时，裸域 `ifzq.gtimg.cn`
+ * 实测仍可用（2026-11-24 18:1x，两者都带 CORS *）。按顺序降级，真实数据优先。
+ */
+export const TENCENT_KLINE_HOSTS = ['web.ifzq.gtimg.cn', 'ifzq.gtimg.cn'] as const
 /** 腾讯日线单次请求超时（8–12s 区间）。 */
 const TENCENT_KLINE_TIMEOUT_MS = 10_000
 /** 失败后 1 次重试的间隔。 */
@@ -143,6 +152,71 @@ const MAX_KLINE_BARS = 160
 /** 与 marketId 相同的沪市规则：5/6/9 开头 → sh，其余 → sz（159 开头的 ETF 属于深市）。 */
 export function tencentKlineSymbol(code: string): string {
   return `${/^(5|6|9)/.test(code) ? 'sh' : 'sz'}${code}`
+}
+
+export type KlineAdjustment = 'qfq' | 'hfq'
+
+/**
+ * 按标的类型选择复权口径（纯函数，market.ts / refresh-snapshot.mjs / 测试共用）。
+ *
+ * - ETF（510/511/512/513/515/516/518/159/588 开头）→ 'hfq'（后复权）：
+ *   rotation-research（task-29）实测腾讯 qfq 前复权对 ETF 失真——510300 的 2014-09→12 算出 +74%
+ *   （真实 +49%）、510880 早期波动率 107%；正确口径是 hfq。ETF 的均线/ATR/触发价必须基于 hfq。
+ * - 个股 → 'qfq'（前复权，与原口径一致）。
+ */
+export function adjustmentFor(code: string): KlineAdjustment {
+  return /^(510|511|512|513|515|516|518|159|588)/.test(code) ? 'hfq' : 'qfq'
+}
+
+/** 复权口径中文标注：hfq → 后复权，qfq → 前复权。 */
+export function adjustmentLabel(adjustment: KlineAdjustment): string {
+  return adjustment === 'hfq' ? '后复权' : '前复权'
+}
+
+/** 腾讯 fqkline URL；复权参数按 adjustmentFor(code) 自动选择，host/adjustment 可显式传参覆盖（便于测试）。 */
+export function tencentKlineUrl(
+  code: string,
+  adjustment: KlineAdjustment = adjustmentFor(code),
+  host: string = TENCENT_KLINE_HOSTS[0],
+): string {
+  return `https://${host}/appstock/app/fqkline/get?param=${tencentKlineSymbol(code)},day,,,320,${adjustment}`
+}
+
+/** ETF 后复权序列按实盘价归一成功后的 adjustment 标注。 */
+export const HFQ_CALIBRATED_ADJUSTMENT = '前复权（按实盘价归一）'
+/** 拿不到实盘收盘价、未做尺度缩放时的 adjustment 标注。 */
+export const HFQ_UNCALIBRATED_ADJUSTMENT = '后复权（实盘价未校准）'
+
+/** 实测/接口价格精度：ETF 多为 3 位小数，缩放后按 3 位取整避免出现 0.8100000001 之类噪声。 */
+function roundPrice(value: number): number {
+  return Math.round(value * 1000) / 1000
+}
+
+/**
+ * 把后复权（hfq）OHLC 序列按「最新实盘收盘 / hfq 最新收盘」缩放回实盘价格尺度（纯函数）。
+ *
+ * - k = actualLastClose / bars[最后].close；OHLC 全部 ×k，volume / amount / 日期 / 涨跌幅保持不变；
+ * - ETF 价格按接口精度保留 3 位小数；
+ * - 返回新数组，**不修改入参**；bars 为空 / actualLastClose 非正或非有限时返回浅拷贝（不缩放）。
+ *
+ * 用途：hfq 保证收益连续（拆分/分红正确），但价格尺度不是实盘价；缩放后等价于「用正确复权因子做前复权」，
+ * 使 quote.price / trigger / stop 与 live quote 处于同一尺度（task-31 修复 159558 hfq 2.421 vs 实盘 0.81）。
+ */
+export function rescaleBarsToActual(bars: Bar[], actualLastClose: number): Bar[] {
+  const copy = bars.map((bar) => ({ ...bar }))
+  if (copy.length === 0) return copy
+  const lastClose = copy[copy.length - 1].close
+  if (!Number.isFinite(actualLastClose) || actualLastClose <= 0 || !Number.isFinite(lastClose) || lastClose <= 0) {
+    return copy
+  }
+  const factor = actualLastClose / lastClose
+  return copy.map((bar) => ({
+    ...bar,
+    open: roundPrice(bar.open * factor),
+    high: roundPrice(bar.high * factor),
+    low: roundPrice(bar.low * factor),
+    close: roundPrice(bar.close * factor),
+  }))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,8 +289,8 @@ function tencentRealtimeTradingDate(node: Record<string, unknown>, symbol: strin
 /**
  * 解析腾讯日线响应（纯函数，便于离线单测）。
  *
- * 输入：`data.<symbol>.qfqday = [[date, open, close, high, low, volume], ...]`
- * 输出：Quote（provider='Tencent kline (qfq)'，adjustment='前复权'，amount=0）。
+ * 输入：`data.<symbol>.hfqday | qfqday = [[date, open, close, high, low, volume], ...]`
+ * 输出：Quote（ETF: provider='Tencent kline (hfq)' / adjustment='后复权'；个股: qfq / 前复权；amount=0）。
  *
  * 校验（不满足则抛中文错误，交给上层降级）：
  * - 至少 21 根；日期严格递增；取最后 160 根；
@@ -232,7 +306,13 @@ export function parseTencentKline(payload: unknown, code: string, now: Date = ne
   const symbol = tencentKlineSymbol(code)
   const node = payload.data[symbol]
   if (!isRecord(node)) throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
-  const rows = Array.isArray(node.qfqday) ? node.qfqday : Array.isArray(node.day) ? node.day : undefined
+  const rows = Array.isArray(node.hfqday)
+    ? node.hfqday
+    : Array.isArray(node.qfqday)
+      ? node.qfqday
+      : Array.isArray(node.day)
+        ? node.day
+        : undefined
   if (!rows || rows.length === 0) throw new Error('暂未返回有效日线，请检查代码或改用手动行情')
 
   const bars: Bar[] = []
@@ -280,6 +360,7 @@ export function parseTencentKline(payload: unknown, code: string, now: Date = ne
   const kept = bars.slice(-MAX_KLINE_BARS)
   const latest = kept[kept.length - 1]
   const previous = kept[kept.length - 2]
+  const adjustment = adjustmentFor(code)
   return {
     code,
     price: latest.close,
@@ -293,8 +374,8 @@ export function parseTencentKline(payload: unknown, code: string, now: Date = ne
     tradeDate: latest.date,
     fetchedAt: now.toISOString(),
     source: 'auto',
-    provider: 'Tencent kline (qfq)',
-    adjustment: '前复权',
+    provider: `Tencent kline (${adjustment})`,
+    adjustment: adjustmentLabel(adjustment),
     bars: kept,
   }
 }
@@ -305,31 +386,70 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
-/** 腾讯日线请求：超时 10s + 1 次重试；失败抛错，由 fetchQuote 决定最终错误文案。 */
+/**
+ * 腾讯日线请求：超时 10s + 1 次重试，并带主机降级（web.ifzq → ifzq）；失败抛错，
+ * 由 fetchQuote 决定最终错误文案。
+ */
 async function fetchTencentKlineQuote(code: string): Promise<Quote> {
-  const symbol = tencentKlineSymbol(code)
-  const url = `${TENCENT_KLINE_URL}?param=${symbol},day,,,320,qfq`
+  const adjustment = adjustmentFor(code)
   let lastError: unknown
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (attempt > 0) await sleep(TENCENT_KLINE_RETRY_DELAY_MS)
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), TENCENT_KLINE_TIMEOUT_MS)
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        cache: 'no-store',
-        credentials: 'omit',
-        headers: { Accept: 'application/json, text/plain, */*' },
-      })
-      if (!response.ok) throw new Error(`行情服务返回 ${response.status}`)
-      return parseTencentKline(await response.json(), code)
-    } catch (error) {
-      lastError = error
-    } finally {
-      clearTimeout(timer)
+    for (const host of TENCENT_KLINE_HOSTS) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), TENCENT_KLINE_TIMEOUT_MS)
+      try {
+        const response = await fetch(tencentKlineUrl(code, adjustment, host), {
+          signal: controller.signal,
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { Accept: 'application/json, text/plain, */*' },
+        })
+        if (!response.ok) throw new Error(`行情服务返回 ${response.status}`)
+        const quote = parseTencentKline(await response.json(), code)
+        // ETF hfq 需要按实盘价归一（task-31）；个股 qfq 本身即实盘附近尺度，保持不变
+        return adjustment === 'hfq' ? calibrateHfqQuote(code, quote) : quote
+      } catch (error) {
+        lastError = error
+      } finally {
+        clearTimeout(timer)
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error('腾讯日线请求失败，请检查网络或手动录入')
+}
+
+/**
+ * ETF 后复权序列按新浪不复权日线的「最新实盘收盘」缩放回实盘价（task-31）。
+ * 成功：provider='Tencent hfq → rescaled'，adjustment='前复权（按实盘价归一）'，price=实盘价；
+ * 失败（新浪 JSONP 不可用 / 日期不一致 / 数据非法）：保留 hfq 原始尺度，adjustment='后复权（实盘价未校准）'。
+ * 只影响 ETF（hfq），个股 qfq 不缩放。
+ */
+async function calibrateHfqQuote(code: string, quote: Quote): Promise<Quote> {
+  try {
+    const rawQuote = await fetchSinaJsonpQuote(code)
+    const rawLatest = rawQuote.bars.at(-1)
+    const hfqLatest = quote.bars.at(-1)
+    if (!rawLatest || !hfqLatest || rawLatest.date !== hfqLatest.date) {
+      throw new Error('实盘日线与 hfq 日线日期不一致')
+    }
+    const bars = rescaleBarsToActual(quote.bars, rawLatest.close)
+    const latest = bars[bars.length - 1]
+    const previous = bars[bars.length - 2]
+    return {
+      ...quote,
+      price: latest.close,
+      prevClose: previous.close,
+      open: latest.open,
+      high: latest.high,
+      low: latest.low,
+      provider: 'Tencent hfq → rescaled',
+      adjustment: HFQ_CALIBRATED_ADJUSTMENT,
+      bars,
+    }
+  } catch {
+    return { ...quote, adjustment: HFQ_UNCALIBRATED_ADJUSTMENT }
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────

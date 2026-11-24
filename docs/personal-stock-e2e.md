@@ -1,6 +1,6 @@
 # 浏览器 E2E：添加非公开股票 → 日线获取（东财主源/腾讯/新浪回退）→ 策略价位
 
-- 运行时间：2026-11-24T01:46:22.725Z → 2026-11-24T01:46:25.949Z（Asia/Shanghai）
+- 运行时间：2026-11-24T10:26:10.031Z → 2026-11-24T10:26:16.047Z（Asia/Shanghai）
 - 页面：http://localhost:3000；股票：600000
 - 结论：**PASS**
 
@@ -17,21 +17,21 @@
 - 进入股票页：成功
 - 页面交互添加股票：600000 浦发银行（status=当前自选）
 - 点击「更新」：触发 fetchQuotes（东财 → JSONP → 腾讯 kline）
-- 拿到日线：{"code":"600000","price":10.71,"tradeDate":"2026-11-24","bars":160,"firstDate":"2026-03-31","lastDate":"2026-11-24","provider":"Tencent kline (qfq)","adjustment":"前复权","source":"auto"}
+- 拿到日线：{"code":"600000","price":10.69,"tradeDate":"2026-11-24","bars":160,"firstDate":"2026-03-31","lastDate":"2026-11-24","provider":"Tencent kline (qfq)","adjustment":"前复权","source":"auto"}
 
 ## 断言
 
 | 断言 | 结果 | 证据 |
 | --- | --- | --- |
-| 股票行出现价格 | ✅ PASS | 浦发银行 600000 当前自选 10.71 -0.37% 收盘 2026 收益额 — 策略 |
+| 股票行出现价格 | ✅ PASS | 浦发银行 600000 当前自选 10.69 -0.56% 收盘 2026 收益额 — 策略 |
 | 详情价位至少一个非「—」 | ✅ PASS | [{"label":"触发价","value":"10.75"},{"label":"保护位","value":"10.27"},{"label":"目标位","value":"11.19"}] |
 | 详情包含触发/保护/目标三项 | ✅ PASS | 触发价 / 保护位 / 目标位 |
-| 今日页出现该股票策略卡 | ✅ PASS | 浦发银行 600000 10.71 -0.37% 收盘 回踩低吸 强度 74 上升趋势仍在，价格回到短期均线区域，等待止跌后介入。 触发 10.75 距触发 +0.4% 保护 10.27 距保护 +4.3% 目标 11.19 距目标 +4.5% 参考上限 2200 股 完整计划 自动日线 · 2026-11-24 |
-| 策略卡有价格且至少一个价位 | ✅ PASS | 价格型数值 5 个：10.71 / 0.37 / 10.75 / 10.27 / 11.19；浦发银行 600000 10.71 -0.37% 收盘 回踩低吸 强度 74 上升趋势仍在，价格回到短期均线区域，等待止跌后介入。 触发 10.75 距触发 +0.4% 保护 10.27 距保护 +4.3% 目标 11.19 距目标 +4.5% 参考上限 2200 股 完整计划 自动日线 · 2026-11-24 |
+| 今日页出现该股票策略卡 | ✅ PASS | 浦发银行 600000 10.69 -0.56% 收盘 熊市观望 强度 74 熊市禁止新买入：等 MA60 回升与宽度修复 熊市：不加仓，只管理持仓/等结构修复 触发 10.75 距触发 +0.6% 保护 10.27 距保护 +4.1% 目标 11.19 距目标 +4.7% 完整计划 自动日线 · 2026-11-24 |
+| 策略卡有价格且至少一个价位 | ✅ PASS | 价格型数值 5 个：10.69 / 0.56 / 10.75 / 10.27 / 11.19；浦发银行 600000 10.69 -0.56% 收盘 熊市观望 强度 74 熊市禁止新买入：等 MA60 回升与宽度修复 熊市：不加仓，只管理持仓/等结构修复 触发 10.75 距触发 +0.6% 保护 10.27 距保护 +4.1% 目标 11.19 距目标 +4.7% 完整计划 自动日线 · 2026-11-24 |
 | 东财 push2his 有请求（成功或失败均可，按实际记录） | ✅ PASS | attempts=4，成功(klines)=0，失败=4 |
-| 日线数据获取成功（东财主源 或 腾讯/新浪回退） | ✅ PASS | 东财主源成功=false；腾讯成功=2（501=0，尝试=2）；新浪成功=0 |
+| 日线数据获取成功（东财主源 或 腾讯/新浪回退） | ✅ PASS | 东财主源成功=false；腾讯成功=2（501=0，尝试=7）；新浪成功=0 |
 | 数据来源可识别 | ✅ PASS | Tencent kline（腾讯回退） |
-| 腾讯 fqkline 回退成功（HTTP 200 且 qfqday≥21 根） | ✅ PASS | [{"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"},{"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}] |
+| 腾讯 fqkline 回退成功（HTTP 200 且 qfqday≥21 根） | ✅ PASS | [{"kind":"response","status":200,"host":"bare","url":"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","bodySnippet":"{\"code\":0,\"msg\":\"\",\"data\":{\"sh600000\":{\"qfqday\":[[\"2025-07-29\",\"12.650\",\"12.370\",\"12.700\",\"12.360\",\"","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"},{"kind":"response","status":200,"host":"bare","url":"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","bodySnippet":"{\"code\":0,\"msg |
 | quote 的 bars 为 160 根（上限） | ✅ PASS | 160 根（2026-03-31 → 2026-11-24） |
 | 无 pageerror | ✅ PASS | 0 条 |
 
@@ -39,13 +39,21 @@
 
 - push2his（东财）记录 4 条：
   - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101","error":"net::ERR_EMPTY_RESPONSE"}
-  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795484784450_wk20wzzoj5b","error":"net::ERR_EMPTY_RESPONSE"}
+  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795515973750_4ghyc2iimh4","error":"net::ERR_EMPTY_RESPONSE"}
   - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101","error":"net::ERR_EMPTY_RESPONSE"}
-  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795484784928_7ox4spjdv66","error":"net::ERR_EMPTY_RESPONSE"}
-- 腾讯 fqkline 记录 2 条（501 为 WAF 挑战页，属数据源侧限制）：
-  - {"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}
-  - {"kind":"response","status":200,"url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}
-- 新浪 JSONP 记录 0 条：
+  - {"kind":"requestfailed","url":"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600000&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=1&beg=20260329&end=20500101&cb=__quote_1795515974277_v06nizfid3m","error":"net::ERR_EMPTY_RESPONSE"}
+- 腾讯 fqkline 记录 7 条（501 为 WAF 挑战页，属数据源侧限制）：
+  - {"kind":"requestfailed","host":"web","url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq","error":"net::ERR_FAILED"}
+  - {"kind":"requestfailed","host":"web","url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq","error":"net::ERR_FAILED"}
+  - {"kind":"requestfailed","host":"web","url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq","error":"net::ERR_FAILED"}
+  - {"kind":"requestfailed","host":"web","url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","error":"net::ERR_FAILED"}
+  - {"kind":"response","status":200,"host":"bare","url":"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","bodySnippet":"{\"code\":0,\"msg\":\"\",\"data\":{\"sh600000\":{\"qfqday\":[[\"2025-07-29\",\"12.650\",\"12.370\",\"12.700\",\"12.360\",\"","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}
+  - {"kind":"requestfailed","host":"web","url":"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","error":"net::ERR_FAILED"}
+  - {"kind":"response","status":200,"host":"bare","url":"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,320,qfq","bodySnippet":"{\"code\":0,\"msg\":\"\",\"data\":{\"sh600000\":{\"qfqday\":[[\"2025-07-29\",\"12.650\",\"12.370\",\"12.700\",\"12.360\",\"","qfqdayRows":321,"firstDate":"2025-07-29","lastDate":"2026-11-24"}
+- 新浪 JSONP 记录 3 条：
+  - {"kind":"requestfailed","url":"https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=320","error":"net::ERR_FAILED"}
+  - {"kind":"requestfailed","url":"https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=320","error":"net::ERR_FAILED"}
+  - {"kind":"requestfailed","url":"https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=320","error":"net::ERR_FAILED"}
 
 ## 数据口径说明（重要）
 
@@ -72,14 +80,16 @@ node scripts/personal-stock-e2e.mjs
 
 ## console 错误（前 10 条；仅记录）
 
+- Access to fetch at 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+- Failed to load resource: net::ERR_FAILED
+- Access to fetch at 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+- Failed to load resource: net::ERR_FAILED
+- Access to fetch at 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000300,day,,,320,qfq' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+- Failed to load resource: net::ERR_FAILED
 - Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
-- Failed to load resource: net::ERR_EMPTY_RESPONSE
+- Access to fetch at 'https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=320' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+- Failed to load resource: net::ERR_FAILED
+- Access to fetch at 'https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=320' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
 
 ## 责任域判定口径
 

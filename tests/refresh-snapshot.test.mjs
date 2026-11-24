@@ -15,6 +15,7 @@ import {
   selectTradeDate,
   tencentSymbol,
 } from '../scripts/refresh-snapshot.mjs'
+import { adjustmentFor, rescaleBarsToActual } from '../src/lib/market.ts'
 import { snapshotSchema } from '../src/lib/snapshot.ts'
 
 /* ─────────────────────────────────────────────────────────────
@@ -34,9 +35,9 @@ function makeKlineRows(count, endDate = TRADE_DATE, startPrice = 100) {
   })
 }
 
-function tencentPayload(code, rows) {
+function tencentPayload(code, rows, dayKey = 'qfqday') {
   const symbol = tencentSymbol(code)
-  return { code: 0, msg: '', data: { [symbol]: { qfqday: rows } } }
+  return { code: 0, msg: '', data: { [symbol]: { [dayKey]: rows } } }
 }
 
 const TENCNET_ROWS = makeKlineRows(24)
@@ -485,4 +486,158 @@ test('fetchBarsForCode：腾讯/新浪/东财全失败时错误文案含三个�
   assert.match(result.error, /腾讯失败/)
   assert.match(result.error, /新浪失败/)
   assert.match(result.error, /东财失败/)
+})
+
+
+/* ─────────────────────────────────────────────────────────────
+ * 6) 复权口径（task-29）：ETF 用 hfq（后复权），个股用 qfq（前复权）
+ * ───────────────────────────────────────────────────────────── */
+
+test('adjustmentFor：ETF → hfq，个股 → qfq', () => {
+  for (const code of ['510300', '510880', '511010', '512000', '513100', '515000', '516000', '518880', '159558', '159915', '588060']) {
+    assert.equal(adjustmentFor(code), 'hfq', code)
+  }
+  for (const code of ['600519', '000001', '300750', '688981']) {
+    assert.equal(adjustmentFor(code), 'qfq', code)
+  }
+})
+
+test('fetchBarsForCode：ETF 请求 hfq 并按新浪实盘价归一；个股请求 qfq 不缩放', async () => {
+  const calls = []
+  const fetcher = async (url) => {
+    calls.push(String(url))
+    if (String(url).includes('quotes.sina.cn')) {
+      return { ok: true, json: async () => makeSinaRows(24) }
+    }
+    const match = /param=(sh|sz)(\d{6}),day,,,320,(hfq|qfq)/.exec(String(url))
+    if (!match) return { ok: false, status: 501 }
+    const rows = makeKlineRows(24, TRADE_DATE, 3)
+    return { ok: true, json: async () => tencentPayload(match[2], rows, match[3] === 'hfq' ? 'hfqday' : 'qfqday') }
+  }
+
+  const etf = await fetchBarsForCode('159558', { fetcher })
+  assert.equal(etf.provider, 'Tencent fqkline (hfq) → rescaled')
+  assert.equal(etf.adjustment, '前复权（按实盘价归一）')
+  assert.ok(calls[0].includes('param=sz159558,day,,,320,hfq'))
+  // 缩放后最后一根 = 新浪不复权最后一根（makeSinaRows 末值 123），收益率保持 hfq 口径
+  assert.ok(etf.bars.at(-1).close === 123)
+
+  const stock = await fetchBarsForCode('600519', { fetcher })
+  assert.equal(stock.provider, 'Tencent fqkline (qfq)')
+  assert.equal(stock.adjustment, '前复权')
+  assert.ok(calls.some((url) => url.includes('param=sh600519,day,,,320,qfq')))
+})
+
+test('fetchBarsForCode：ETF 拿不到实盘价 → 不缩放并标注「后复权（实盘价未校准）」', async () => {
+  const fetcher = async (url) => {
+    const match = /param=(sh|sz)(\d{6}),day,,,320,hfq/.exec(String(url))
+    if (match) {
+      return { ok: true, json: async () => tencentPayload(match[2], makeKlineRows(24, TRADE_DATE, 3), 'hfqday') }
+    }
+    return { ok: false, status: 501 } // 新浪 + 腾讯 qt 都失败
+  }
+  const result = await fetchBarsForCode('159558', { fetcher })
+  assert.equal(result.provider, 'Tencent fqkline (hfq)')
+  assert.equal(result.adjustment, '后复权（实盘价未校准）')
+  assert.equal(result.bars.at(-1).close, Number(makeKlineRows(24, TRADE_DATE, 3).at(-1)[2]))
+})
+
+test('refreshSnapshot 端到端：ETF 用腾讯 hfq → 快照 provider/adjustment 如实标注', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'katestock-refresh-'))
+  try {
+    const universePath = join(dir, 'universe.json')
+    const outputPath = join(dir, 'latest.json')
+    writeFileSync(universePath, JSON.stringify(['159558', '588060']))
+    const fetcher = async (url) => {
+      if (String(url).includes('quotes.sina.cn')) {
+        return { ok: true, json: async () => makeSinaRows(24) }
+      }
+      const match = /param=(sh|sz)(\d{6}),day,,,320,hfq/.exec(String(url))
+      if (match) {
+        const rows = makeKlineRows(24, TRADE_DATE, 3)
+        return { ok: true, json: async () => tencentPayload(match[2], rows, 'hfqday') }
+      }
+      return { ok: false, status: 501 }
+    }
+    const result = await refreshSnapshot({ universePath, outputPath, fetcher, now: FIXTURE_NOW, write: true })
+    assert.equal(result.valid, 2)
+    assert.equal(result.failed, 0)
+    const written = JSON.parse(readFileSync(outputPath, 'utf8'))
+    assert.equal(snapshotSchema.safeParse(written).success, true)
+    for (const code of ['159558', '588060']) {
+      assert.equal(written.quotes[code].provider, 'Tencent fqkline (hfq) → rescaled')
+      assert.equal(written.quotes[code].adjustment, '前复权（按实盘价归一）')
+      // 缩放后价格回到实盘价（新浪不复权最后一根 123）
+      assert.equal(written.quotes[code].price, 123)
+    }
+    assert.match(written.source, /hfq/)
+    assert.match(written.source, /按实盘价归一/)
+    assert.equal(written.sourceUrl, 'https://web.ifzq.gtimg.cn/')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('buildSnapshot：hfq 与新浪不复权混用时 source 标注口径混合、sourceUrl 选腾讯', () => {
+  const hfqBars = parseTencentBars(tencentPayload('159558', makeKlineRows(24, TRADE_DATE, 3), 'hfqday'), '159558')
+  const hfqQuote = buildQuote('159558', hfqBars, {
+    provider: 'Tencent fqkline (hfq)',
+    adjustment: '后复权',
+    tradeDate: TRADE_DATE,
+    fetchedAt: FIXTURE_NOW.toISOString(),
+  })
+  const sinaQuote = buildQuote('600519', parseSinaBars(makeSinaRows(24)), {
+    provider: 'Sina kline (不复权)',
+    adjustment: '不复权（tushare 未验证）',
+    tradeDate: TRADE_DATE,
+    fetchedAt: FIXTURE_NOW.toISOString(),
+  })
+  const report = buildSnapshot({
+    quotes: { '159558': hfqQuote, '600519': sinaQuote },
+    failures: [],
+    universeSize: 2,
+    tradeDate: TRADE_DATE,
+    generatedAt: FIXTURE_NOW.toISOString(),
+    now: FIXTURE_NOW,
+  })
+  assert.equal(snapshotSchema.safeParse(report).success, true)
+  assert.match(report.source, /Tencent fqkline \(hfq\)/)
+  assert.match(report.source, /Sina kline \(不复权\)/)
+  assert.match(report.source, /复权口径混合/)
+  assert.match(report.source, /后复权/)
+  assert.equal(report.sourceUrl, 'https://web.ifzq.gtimg.cn/')
+})
+
+
+test('fetchBarsForCode 腾讯主机降级：web.ifzq 501 → 裸域 ifzq 成功（ETF hfq）', async () => {
+  const calls = []
+  const fetcher = async (url) => {
+    calls.push(String(url))
+    if (String(url).includes('://web.ifzq.gtimg.cn')) return { ok: false, status: 501 }
+    if (String(url).includes('://ifzq.gtimg.cn')) {
+      return { ok: true, json: async () => tencentPayload('159558', makeKlineRows(24, TRADE_DATE, 3), 'hfqday') }
+    }
+    return { ok: false, status: 501 }
+  }
+  const result = await fetchBarsForCode('159558', { fetcher })
+  assert.equal(result.provider, 'Tencent fqkline (hfq)')
+  // 该 fetcher 对新浪/腾讯 qt 返回 501 → 未校准，保留 hfq 尺度
+  assert.equal(result.adjustment, '后复权（实盘价未校准）')
+  assert.ok(calls[0].includes('://web.ifzq.gtimg.cn'))
+  assert.ok(calls.some((url) => url.includes('://ifzq.gtimg.cn') && url.includes('sz159558,day,,,320,hfq')))
+})
+
+test('rescaleBarsToActual：拆分 fixture（hfq 3.0/3.3 vs 不复权 1.0/1.1）', () => {
+  const hfqBars = [
+    { date: '2026-01-02', open: 3.0, high: 3.1, low: 2.9, close: 3.0, volume: 1000, amount: 0, changePct: 0 },
+    { date: '2026-01-05', open: 3.3, high: 3.4, low: 3.2, close: 3.3, volume: 1200, amount: 0, changePct: 10 },
+  ]
+  const original = JSON.parse(JSON.stringify(hfqBars))
+  const scaled = rescaleBarsToActual(hfqBars, 1.1)
+  assert.deepEqual(scaled.map((bar) => bar.close), [1, 1.1])
+  assert.ok(Math.abs(scaled[1].close / scaled[0].close - 3.3 / 3.0) < 1e-9)
+  assert.deepEqual(scaled.map((bar) => bar.volume), [1000, 1200])
+  assert.deepEqual(hfqBars, original)
+  // 异常 actual → 不缩放
+  assert.deepEqual(rescaleBarsToActual(hfqBars, 0).map((bar) => bar.close), [3.0, 3.3])
 })

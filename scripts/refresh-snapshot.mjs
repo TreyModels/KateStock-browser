@@ -6,8 +6,10 @@
  * 生成 public/data/latest.json，供页面在无后端时使用；全部离线逻辑可单测，运行时才访问网络。
  *
  * 数据源（2026-11-24 实测）：
- *   - 腾讯：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,320,qfq
- *     → data.<symbol>.qfqday = [[date,open,close,high,low,volume], ...]，带 CORS，前复权，无 amount（置 0）。
+ *   - 腾讯：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=<symbol>,day,,,320,<adj>
+ *     复权口径按标的类型选择（task-29）：ETF（510/511/512/513/515/516/518/159/588 开头）用 `hfq`（后复权），
+ *     个股用 `qfq`（前复权）；响应 key 相应为 hfqday/qfqday，带 CORS，无 amount（置 0）。
+ *     rotation-research 实测腾讯 qfq 对 ETF 失真（510300 2014-09→12 算出 +74%，真实 +49%），ETF 必须 hfq。
  *     07:44 起本机被 501 WAF 挑战页拦截（不是永久不可用，仍作为第一优先）。
  *   - 新浪：https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=sh600519&scale=240&ma=no&datalen=320
  *     → [{ day, open, high, low, close, volume }, ...]，**不复权**、volume 单位「股」（÷100 转「手」）、无 amount。
@@ -27,6 +29,14 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import {
+  HFQ_CALIBRATED_ADJUSTMENT,
+  HFQ_UNCALIBRATED_ADJUSTMENT,
+  TENCENT_KLINE_HOSTS,
+  adjustmentFor,
+  rescaleBarsToActual,
+  tencentKlineUrl,
+} from '../src/lib/market.ts'
 import { snapshotSchema } from '../src/lib/snapshot.ts'
 import { generateStrategy } from '../src/lib/strategy.ts'
 
@@ -34,16 +44,20 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_UNIVERSE_PATH = resolve(SCRIPT_DIR, 'public-universe.json')
 const DEFAULT_OUTPUT_PATH = 'public/data/latest.json'
 
-const TENCENT_ENDPOINT = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
 const SINA_ENDPOINT = 'https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData'
 const EASTMONEY_ENDPOINT = 'https://push2his.eastmoney.com/api/qt/stock/kline/get'
 const SOURCE_URL_TENCENT = 'https://web.ifzq.gtimg.cn/'
 const SOURCE_URL_SINA = 'https://quotes.sina.cn/'
 const SOURCE_URL_EASTMONEY = 'https://www.eastmoney.com/'
-const PROVIDER_TENCENT = 'Tencent fqkline (qfq)'
 const PROVIDER_SINA = 'Sina kline (不复权)'
 const PROVIDER_EASTMONEY = 'Eastmoney daily OHLCV (前复权)'
 const ADJUSTMENT_QFQ = '前复权'
+const ADJUSTMENT_HFQ = '后复权'
+
+/** 腾讯 provider 文案按复权口径动态生成（ETF hfq / 个股 qfq）。 */
+function tencentProvider(adjustment) {
+  return `Tencent fqkline (${adjustment})`
+}
 const ADJUSTMENT_SINA = '不复权（tushare 未验证）'
 const SINA_DATALEN = 320
 const STRATEGY_VERSION = 'katestock-rules-v1'
@@ -144,8 +158,14 @@ export function parseTencentBars(payload, code) {
   const symbol = tencentSymbol(code)
   const data = isRecord(payload) && isRecord(payload.data) ? payload.data[symbol] : undefined
   if (!isRecord(data)) throw new Error('腾讯响应缺少该代码日线')
-  const rows = Array.isArray(data.qfqday) ? data.qfqday : Array.isArray(data.day) ? data.day : undefined
-  if (!rows || rows.length === 0) throw new Error('腾讯响应没有 qfqday')
+  const rows = Array.isArray(data.hfqday)
+    ? data.hfqday
+    : Array.isArray(data.qfqday)
+      ? data.qfqday
+      : Array.isArray(data.day)
+        ? data.day
+        : undefined
+  if (!rows || rows.length === 0) throw new Error('腾讯响应没有 hfqday/qfqday')
 
   const bars = []
   for (const row of rows) {
@@ -314,10 +334,12 @@ export function buildSnapshot({ quotes, failures, universeSize, tradeDate, gener
       : adjustments.length > 1
         ? `（复权口径混合：${adjustments.join(' / ')}）`
         : ''
-  const source = providers.length ? `${providers.join(' / ')}${adjustmentSuffix}` : `Tencent fqkline (qfq) (${ADJUSTMENT_QFQ})`
-  const sourceUrl = providers.includes(PROVIDER_TENCENT)
+  const source = providers.length
+    ? `${providers.join(' / ')}${adjustmentSuffix}`
+    : `Tencent fqkline (qfq) (${ADJUSTMENT_QFQ})`
+  const sourceUrl = providers.some((provider) => provider.startsWith('Tencent fqkline'))
     ? SOURCE_URL_TENCENT
-    : providers.includes(PROVIDER_SINA)
+    : providers.some((provider) => provider.startsWith('Sina kline'))
       ? SOURCE_URL_SINA
       : SOURCE_URL_EASTMONEY
 
@@ -378,10 +400,6 @@ async function fetchJson(url, { fetcher = fetch } = {}) {
   throw lastError instanceof Error ? lastError : new Error('source request failed')
 }
 
-function tencentUrl(code) {
-  return `${TENCENT_ENDPOINT}?param=${tencentSymbol(code)},day,,,320,qfq`
-}
-
 function sinaUrl(code) {
   return `${SINA_ENDPOINT}?symbol=${tencentSymbol(code)}&scale=240&ma=no&datalen=${SINA_DATALEN}`
 }
@@ -402,12 +420,102 @@ function eastmoneyUrl(code) {
   return `${EASTMONEY_ENDPOINT}?${params.toString()}`
 }
 
-/** 单只：腾讯优先 → 新浪 → 东财兜底 → 返回 error（不抛，交给汇总）。 */
+/** 富文本请求（腾讯 qt.gtimg.cn 返回 script 文本而非 JSON），带超时；不重试。 */
+async function fetchText(url, { fetcher = fetch } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const response = await fetcher(url, {
+      signal: controller.signal,
+      cache: 'no-store',
+      credentials: 'omit',
+      headers: { Accept: 'text/plain, */*', 'User-Agent': 'Mozilla/5.0 KateStock/2.0' },
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return await response.text()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 腾讯实时价（qt.gtimg.cn script 文本）：v_sz159558="...", 字段 3=现价、字段 30=YYYYMMDDHHmmss 北京时间。 */
+export function parseTencentRealtime(text, code) {
+  const symbol = tencentSymbol(code)
+  const match = new RegExp(`v_${symbol}="([^"]*)"`).exec(String(text ?? ''))
+  if (!match) throw new Error('腾讯实时价格式非法')
+  const fields = match[1].split('~')
+  const price = Number(fields[3])
+  if (!Number.isFinite(price) || price <= 0) throw new Error('腾讯实时价缺失')
+  const rawTime = fields[30] ?? ''
+  const timeMatch = /^(\d{4})(\d{2})(\d{2})\d{6}$/.exec(String(rawTime).trim())
+  return {
+    close: price,
+    date: timeMatch ? `${timeMatch[1]}-${timeMatch[2]}-${timeMatch[3]}` : undefined,
+  }
+}
+
+/**
+ * 取「最新实盘收盘」用于 hfq→实盘价归一（task-31）：
+ * 1) 新浪不复权日线最后一根 close（带日期，首选）；
+ * 2) 失败退回腾讯 gtimg 实时价（qt.gtimg.cn，字段 30 提供日期）。
+ * 都失败返回 undefined（调用方不缩放并标注「后复权（实盘价未校准）」）。
+ */
+async function fetchActualClose(code, options) {
+  try {
+    const payload = await fetchJson(sinaUrl(code), options)
+    const bars = parseSinaBars(payload)
+    const last = bars[bars.length - 1]
+    return { close: last.close, date: last.date }
+  } catch {
+    // 继续尝试腾讯实时价
+  }
+  try {
+    const text = await fetchText(`https://qt.gtimg.cn/q=${tencentSymbol(code)}`, options)
+    return parseTencentRealtime(text, code)
+  } catch {
+    return undefined
+  }
+}
+
+/** ETF hfq 序列按实盘价归一；失败保留 hfq 尺度并标注未校准。 */
+async function calibrateHfqBars(code, bars, options) {
+  const hfqLast = bars[bars.length - 1]
+  const actual = await fetchActualClose(code, options)
+  if (!actual || !Number.isFinite(actual.close) || actual.close <= 0 || !actual.date || actual.date !== hfqLast.date) {
+    return {
+      bars,
+      provider: tencentProvider('hfq'),
+      adjustment: HFQ_UNCALIBRATED_ADJUSTMENT,
+    }
+  }
+  return {
+    bars: rescaleBarsToActual(bars, actual.close),
+    provider: `${tencentProvider('hfq')} → rescaled`,
+    adjustment: HFQ_CALIBRATED_ADJUSTMENT,
+  }
+}
+
+/** 单只：腾讯优先（web.ifzq → ifzq 主机降级；ETF hfq→实盘价归一 / 个股 qfq）→ 新浪 → 东财兜底 → 返回 error（不抛）。 */
 export async function fetchBarsForCode(code, options = {}) {
+  const adjustment = adjustmentFor(code)
   let tencentError
   try {
-    const payload = await fetchJson(tencentUrl(code), options)
-    return { code, bars: parseTencentBars(payload, code), provider: PROVIDER_TENCENT, adjustment: ADJUSTMENT_QFQ }
+    let payload
+    for (const host of TENCENT_KLINE_HOSTS) {
+      try {
+        payload = await fetchJson(tencentKlineUrl(code, adjustment, host), options)
+        break
+      } catch (error) {
+        tencentError = error
+      }
+    }
+    if (payload === undefined) throw tencentError instanceof Error ? tencentError : new Error('腾讯日线请求失败')
+    const parsedBars = parseTencentBars(payload, code)
+    if (adjustment === 'hfq') {
+      const calibrated = await calibrateHfqBars(code, parsedBars, options)
+      return { code, bars: calibrated.bars, provider: calibrated.provider, adjustment: calibrated.adjustment }
+    }
+    return { code, bars: parsedBars, provider: tencentProvider('qfq'), adjustment: ADJUSTMENT_QFQ }
   } catch (error) {
     tencentError = error
   }

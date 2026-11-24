@@ -1,12 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  adjustmentFor,
+  adjustmentLabel,
   extractSinaJsonpPayload,
   fetchQuote,
   parseSinaKline,
   parseTencentKline,
+  rescaleBarsToActual,
   sinaJsonpUrl,
   tencentKlineSymbol,
+  tencentKlineUrl,
 } from '../src/lib/market.ts'
 
 /* ─────────────────────────────────────────────────────────────
@@ -46,7 +50,7 @@ const KLINE_ROWS = [
 const REALTIME_20261123 = '20261123161441' // 2026-11-23 16:14:41 北京
 const FIXTURE_NOW = new Date('2026-11-23T08:00:00Z') // 2026-11-23 16:00 北京
 
-function makePayload(symbol, rows, realtime = REALTIME_20261123) {
+function makePayload(symbol, rows, realtime = REALTIME_20261123, dayKey = 'qfqday') {
   const snapshot = Array.from({ length: 31 }, () => '')
   if (realtime) snapshot[30] = realtime
   return {
@@ -54,7 +58,7 @@ function makePayload(symbol, rows, realtime = REALTIME_20261123) {
     msg: '',
     data: {
       [symbol]: {
-        qfqday: rows,
+        [dayKey]: rows,
         qt: { [symbol]: snapshot },
       },
     },
@@ -427,9 +431,10 @@ test('回退链：腾讯 501 → 新浪 JSONP 成功（第四级）', async () =
     assert.equal(quote.bars.length, SINA_ROWS.length)
     assert.equal(quote.volume, 56976)
     // 东财 fetch 1 次 + 腾讯 2 次（1 次重试）；新浪走 script 注入不发 fetch
-    assert.equal(mock.calls.length, 3)
-    assert.match(mock.calls[1], /web\.ifzq\.gtimg\.cn/)
-    assert.match(mock.calls[2], /web\.ifzq\.gtimg\.cn/)
+    // 东财 fetch 1 次；腾讯 web 主机 2 次（1 次重试）+ 裸域 ifzq 主机 2 次；新浪走 script 注入不发 fetch
+    assert.equal(mock.calls.filter((url) => url.includes('push2his.eastmoney.com')).length, 1)
+    assert.equal(mock.calls.filter((url) => url.includes('://web.ifzq.gtimg.cn')).length, 2)
+    assert.equal(mock.calls.filter((url) => url.includes('://ifzq.gtimg.cn')).length, 2)
   } finally {
     mock.restore()
     browser.restore()
@@ -446,5 +451,153 @@ test('回退链：四级全失败时抛错', async () => {
     await assert.rejects(() => fetchQuote('600519'))
   } finally {
     mock.restore()
+  }
+})
+
+
+/* ─────────────────────────────────────────────────────────────
+ * 6) 复权口径（task-29）：ETF 用 hfq（后复权），个股用 qfq（前复权）
+ *
+ * rotation-research 实测：腾讯 qfq 对 ETF 失真（510300 2014 年算出 +74%，真实 +49%；
+ * 510880 早期波动率 107%），ETF 必须使用 hfq 后复权。
+ * ───────────────────────────────────────────────────────────── */
+
+test('adjustmentFor：ETF 前缀 → hfq，个股 → qfq', () => {
+  for (const code of ['510300', '510880', '511010', '512000', '513100', '515000', '516000', '518880', '159558', '159915', '588060']) {
+    assert.equal(adjustmentFor(code), 'hfq', code)
+  }
+  for (const code of ['600519', '601318', '000001', '300750', '688981', '002008']) {
+    assert.equal(adjustmentFor(code), 'qfq', code)
+  }
+  assert.equal(adjustmentLabel('hfq'), '后复权')
+  assert.equal(adjustmentLabel('qfq'), '前复权')
+})
+
+test('tencentKlineUrl：ETF 用 hfq、个股用 qfq，symbol 与 datalen 正确', () => {
+  assert.match(tencentKlineUrl('510300'), /param=sh510300,day,,,320,hfq$/)
+  assert.match(tencentKlineUrl('159558'), /param=sz159558,day,,,320,hfq$/)
+  assert.match(tencentKlineUrl('588060'), /param=sh588060,day,,,320,hfq$/)
+  assert.match(tencentKlineUrl('600519'), /param=sh600519,day,,,320,qfq$/)
+  assert.match(tencentKlineUrl('000001'), /param=sz000001,day,,,320,qfq$/)
+  // 显式覆盖（便于测试/排查）
+  assert.match(tencentKlineUrl('600519', 'hfq'), /,320,hfq$/)
+  // 主机降级：web.ifzq 被 501 时用裸域 ifzq
+  assert.match(tencentKlineUrl('159558', 'hfq', 'ifzq.gtimg.cn'), /^https:\/\/ifzq\.gtimg\.cn\/.*param=sz159558,day,,,320,hfq$/)
+})
+
+test('ETF hfq 响应解析：hfqday → provider=hfq / adjustment=后复权', () => {
+  const quote = parseTencentKline(makePayload('sz159558', makeRows(24), REALTIME_20261123, 'hfqday'), '159558', FIXTURE_NOW)
+  assert.equal(quote.provider, 'Tencent kline (hfq)')
+  assert.equal(quote.adjustment, '后复权')
+  assert.equal(quote.tradeDate, '2026-11-23')
+  assert.equal(quote.bars.length, 24)
+})
+
+test('回退链：ETF 的腾讯请求 URL 使用 hfq（个股仍 qfq）', async () => {
+  const rows = makeRows(24)
+  const mock = mockFetch((url) => {
+    if (url.includes('push2his.eastmoney.com')) return { ok: false, status: 502 }
+    if (url.includes('web.ifzq.gtimg.cn')) {
+      const match = /param=(sh|sz)(\d{6}),day,,,320,(hfq|qfq)/.exec(url)
+      const code = match?.[2] ?? '600519'
+      const dayKey = match?.[3] === 'hfq' ? 'hfqday' : 'qfqday'
+      return { ok: true, json: async () => makePayload(`${match?.[1] ?? 'sh'}${code}`, rows, REALTIME_20261123, dayKey) }
+    }
+    throw new Error(`unexpected url ${url}`)
+  })
+  try {
+    const etf = await fetchQuote('159558')
+    assert.equal(etf.provider, 'Tencent kline (hfq)')
+    // 无浏览器环境 → 新浪 JSONP 不可用 → 保留 hfq 尺度并标注未校准
+    assert.equal(etf.adjustment, '后复权（实盘价未校准）')
+    assert.ok(mock.calls.some((url) => url.includes('param=sz159558,day,,,320,hfq')))
+
+    const stock = await fetchQuote('600519')
+    assert.equal(stock.provider, 'Tencent kline (qfq)')
+    assert.equal(stock.adjustment, '前复权')
+    assert.ok(mock.calls.some((url) => url.includes('param=sh600519,day,,,320,qfq')))
+  } finally {
+    mock.restore()
+  }
+})
+
+
+test('腾讯主机降级：web.ifzq 501 → 裸域 ifzq.gtimg.cn 成功（ETF hfq）', async () => {
+  const rows = makeRows(24)
+  const mock = mockFetch((url) => {
+    if (url.includes('push2his.eastmoney.com')) return { ok: false, status: 502 }
+    if (url.includes('://web.ifzq.gtimg.cn')) return { ok: false, status: 501 }
+    if (url.includes('://ifzq.gtimg.cn')) {
+      return { ok: true, json: async () => makePayload('sz159558', rows, REALTIME_20261123, 'hfqday') }
+    }
+    throw new Error(`unexpected url ${url}`)
+  })
+  try {
+    const quote = await fetchQuote('159558')
+    assert.equal(quote.provider, 'Tencent kline (hfq)')
+    assert.equal(quote.adjustment, '后复权（实盘价未校准）')
+    assert.ok(mock.calls.some((url) => url.includes('://web.ifzq.gtimg.cn')))
+    assert.ok(mock.calls.some((url) => url.includes('://ifzq.gtimg.cn') && url.includes('param=sz159558,day,,,320,hfq')))
+  } finally {
+    mock.restore()
+  }
+})
+
+
+/* ─────────────────────────────────────────────────────────────
+ * 7) hfq → 实盘价归一（task-31）：拆分 fixture、收益率一致、price=实盘
+ * ───────────────────────────────────────────────────────────── */
+
+test('rescaleBarsToActual：拆分 fixture hfq 3.0/3.3 → 实盘 1.0/1.1，收益率/volume/日期不变且不改入参', () => {
+  const hfqBars = [
+    { date: '2026-01-02', open: 3.0, high: 3.1, low: 2.9, close: 3.0, volume: 1000, amount: 0, changePct: 0 },
+    { date: '2026-01-05', open: 3.3, high: 3.4, low: 3.2, close: 3.3, volume: 1200, amount: 0, changePct: 10 },
+  ]
+  const snapshotBefore = JSON.parse(JSON.stringify(hfqBars))
+  const scaled = rescaleBarsToActual(hfqBars, 1.1) // k = 1.1 / 3.3 = 1/3
+  assert.deepEqual(scaled.map((bar) => bar.close), [1, 1.1])
+  assert.deepEqual(scaled.map((bar) => bar.open), [1, 1.1])
+  assert.deepEqual(scaled.map((bar) => bar.date), ['2026-01-02', '2026-01-05'])
+  assert.deepEqual(scaled.map((bar) => bar.changePct), [0, 10]) // 涨跌幅不变
+  assert.deepEqual(scaled.map((bar) => bar.volume), [1000, 1200]) // volume 不变
+  // 收益率一致：(1.1/1 - 1) = (3.3/3.0 - 1)
+  assert.ok(Math.abs(scaled[1].close / scaled[0].close - 3.3 / 3.0) < 1e-9)
+  // 不改入参
+  assert.deepEqual(hfqBars, snapshotBefore)
+  // 异常入参：不缩放、返回拷贝
+  const untouched = rescaleBarsToActual(hfqBars, Number.NaN)
+  assert.deepEqual(untouched.map((bar) => bar.close), [3.0, 3.3])
+  assert.notEqual(untouched, hfqBars)
+  assert.deepEqual(rescaleBarsToActual([], 1.1), [])
+})
+
+test('ETF 校准：腾讯 hfq + 新浪不复权 → price=实盘价、provider=rescaled、adjustment=前复权（按实盘价归一）', async () => {
+  const rows = makeRows(24) // hfq 序列：close 100..123，末根 2026-11-23
+  const mock = mockFetch((url) => {
+    if (url.includes('push2his.eastmoney.com')) return { ok: false, status: 502 }
+    if (url.includes('://web.ifzq.gtimg.cn')) {
+      return { ok: true, json: async () => makePayload('sz159558', rows, REALTIME_20261123, 'hfqday') }
+    }
+    throw new Error(`unexpected url ${url}`)
+  })
+  // 新浪不复权：与 hfq 同日（2026-11-23），最后一根收盘 1439
+  const browser = mockBrowserForSina(SINA_ROWS)
+  try {
+    const quote = await fetchQuote('159558')
+    assert.equal(quote.provider, 'Tencent hfq → rescaled')
+    assert.equal(quote.adjustment, '前复权（按实盘价归一）')
+    assert.equal(quote.price, 1439) // 实盘价（新浪不复权最后一根）
+    assert.equal(quote.bars.at(-1).close, 1439)
+    assert.equal(quote.tradeDate, '2026-11-23')
+    // 缩放不改变体积与涨跌幅
+    assert.equal(quote.volume, 1000)
+    assert.equal(quote.bars.at(-1).volume, 1000)
+    // 缩放后序列收益率与 hfq 一致（价格按 3 位小数取整，允许 1e-3 级误差）
+    const hfqRatio = Number(rows.at(-1)[2]) / Number(rows.at(-2)[2])
+    const scaledRatio = quote.bars.at(-1).close / quote.bars.at(-2).close
+    assert.ok(Math.abs(hfqRatio - scaledRatio) < 1e-3)
+  } finally {
+    mock.restore()
+    browser.restore()
   }
 })

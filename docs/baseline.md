@@ -112,23 +112,24 @@ shasum -a 256 /tmp/live.js
 
 ---
 
-## 4. 定时任务：16:45 / 07:05（北京时间）
+## 4. 定时任务：16:50 / 07:50（北京时间；发布 workflow 已迁移）
 
-【代码】`.github/workflows/market-update.yml`：
+【代码】`.github/workflows/deploy-pages.yml`（原 `.github/workflows/market-update.yml` 已移除）：
 
 | 项 | 值 | 证据 |
 | --- | --- | --- |
-| 收盘后调度 | `cron: '45 8 * * 1-5'` = **16:45 北京**，周一至周五 | `:7` |
-| 盘前调度 | `cron: '5 23 * * 0-4'` = 次日 **07:05 北京**，周一至周五 | `:8` |
-| 其他触发 | `workflow_dispatch` + push 到 `main` | `:3-5` |
-| 并发与超时 | `concurrency: katestock-market-update`；`timeout-minutes: 20` | `:11-17` |
-| 流水线 | akshare==1.17.86 → `npm ci` → `ingest.py` → `generate_signals.mjs` → 可选 `ai_brief.py`（需 secret）→ python unittest → node tests → `npm run build` → `check_public.py` | `:27-37` |
-| 发布 | 上传 `dist` 为 Pages artifact，仅 generate 成功后 deploy | `:38-52` |
-| 失败行为 | 生成/校验失败则不部署，线上保留上一版（last-good） | 【代码】`docs/operations-2.0.md:5` |
+| 收盘后调度 | `cron: '50 8 * * 1-5'` = **16:50 北京**，周一至周五 | `deploy-pages.yml:9` |
+| 盘前调度 | `cron: '50 23 * * 0-4'` = 次日 **07:50 北京**，周一至周五 | `deploy-pages.yml:11` |
+| 其他触发 | `workflow_dispatch` + push 到 `main` | `:4-6` |
+| 并发与超时 | `concurrency: pages`；`timeout-minutes: 20` | `:18-25` |
+| 流水线 | checkout → setup-node **24** → `npm ci` → **`npm run refresh`**（失败 sleep 20 重试一次；仍失败则 warning 并部署 committed last-good 快照）→ **`bash scripts/verify.sh`** → configure-pages → `npm run build` → **upload-pages-artifact** | `:26-43` |
+| 发布 | **deploy-pages@v4**（`needs: build`） | `:44-54` |
+| 失败行为 | refresh 失败不阻塞（回退 last-good）；verify/build/部署失败则保留线上上一版 | `:34-43` + `docs/operations-2.0.md:5` |
+| 数据完成判定 | 仍由 `scripts/ingest.py` 的 `completed_date` **16:45** 决定；16:50 的 workflow 触发只是给数据源结算与排队留缓冲 | `scripts/ingest.py:18-23`、`tests/test_ingest.py:6-10` |
 
-- 07:05 那班在 16:45 之前运行，`completed_date` 只会取 **昨天**的已完成交易日，所以它的作用是「盘前再发布一次上一交易日快照」，不会产生当日数据。
-- 时区：中国无夏令时，UTC+8 固定偏移，故 cron 的 UTC 小时 +8 即为北京时间（16:45 = 08:45Z；07:05 = 23:05Z 前一 UTC 日）。
-- 线上最近一次发布：`generatedAt 2026-11-23T09:58:35.718691Z` = **北京时间 17:58:35**，远晚于 16:45；工作流有 push/dispatch 两种入口，**无法从静态站点判断本次是 cron 还是 push 触发**【不确定】。
+- 07:50 那班在 16:50 之前运行，`completed_date` 只会取 **昨天**的已完成交易日，所以它的作用是「盘前再发布一次上一交易日快照」，不会产生当日数据。
+- 时区：中国无夏令时，UTC+8 固定偏移，故 cron 的 UTC 小时 +8 即为北京时间（16:50 = 08:50Z；07:50 = 23:50Z 前一 UTC 日）。
+- 线上最近一次发布：`generatedAt 2026-11-23T09:58:35.718691Z` = **北京时间 17:58:35**，远晚于 16:50；工作流有 push/dispatch 两种入口，**无法从静态站点判断本次是 cron 还是 push 触发**【不确定】。
 - **节假日行为【不确定】**：workflow 在周一至周五（含中国法定节假日）仍会触发。`ingest.py:58` 用「日历最大日期 < 今天」判定日历陈旧；Sina 交易日历是否包含未来日期未验证，因此节假日可能(a)成功重发上一交易日快照，或(b)抛「Trading calendar is out of date」保留 last-good。两种都可接受，但都需要在验收时观察，不能假设。
 
 ---
@@ -140,7 +141,7 @@ shasum -a 256 /tmp/live.js
 | README 明示「四策略独立历史回测：收盘出信号、次日开盘执行，计入成本并防止未来函数」 | 【代码】`README.md:18` |
 | 回测假设面板明示「收盘生成信号，下一交易日开盘执行；单边成本 0.10%」 | `src/components/BacktestLab.tsx:241` |
 | quants 策略同口径「次日开盘成交，单边成本 0.1%」 | `src/components/BacktestLab.tsx:198` |
-| 回测实现：pending entry 在**下一根 bar 的 open** × (1+COST) 成交；`COST=0.001` | `src/lib/backtest.ts:74`、`:181-191` |
+| 回测实现（**重构中，task-30**）：原口径为 pending entry 在**下一根 bar 的 open** × (1+COST) 成交、`COST=0.001`；新实现改为显式费用函数 `buyFeeFor`/`sellFeeFor`/`roundTripCostBps`（`DEFAULT_COST_OPTIONS`）并含涨跌停/顺延等执行限制，EOD 语义（收盘出信号/次日开盘执行）仍为目标；**待 signals-alerts task-30 落地后复核** | `src/lib/backtest.ts`（费用函数 `:140-198`、pendingEntry `:384-442`） |
 | 复盘叙事文案「下一交易日开盘才进入回测」「不在当天收盘前偷用数据」 | `src/lib/backtest.ts:291-292` |
 | 定时信号复用**同一策略引擎** `generateStrategy`，且不发布个人仓位/股数 | `scripts/generate_signals.mjs:1-27`；单测 `tests/signals.test.mjs:8-22` |
 | 发布信号字段被强约束（无 sizing）：`action/actionLabel/score/summary/reasons/indicators` | `scripts/check_public.py:12-18` |
@@ -150,6 +151,8 @@ shasum -a 256 /tmp/live.js
 | 交易成本/止损优先等限制声明 | `src/components/BacktestLab.tsx:241` |
 
 结论：原站的信号是**日频、收盘确认、次日执行**的研究信号；它没有「盘中命中触发/止损/目标」的概念，也没有任何通知去重/节流逻辑。本轮新增的提醒层必须**叠加**在这套 EOD 语义之上，不得改变 `generateStrategy`/回测口径（`tests/signals.test.mjs` 是回归护栏）。
+
+> **2026-11-24 状态**：`src/lib/backtest.ts` 正在重构（signals-alerts task-30）。`tests/acceptance/check_baseline.mjs` 的 B-10（回测 EOD 语义）暂标记 **SKIP**，task-30 落地后恢复为「次日开盘成交 + 费用/成本口径 + 无未来函数」断言。
 
 ---
 
@@ -226,7 +229,7 @@ content-length: 701293
 - `signals` 每条只有 `action/actionLabel/score/summary/reasons/indicators`（无 trigger/stop/target、无股数）→ 公开清单的「价位/提醒」不能直接来自快照信号，必须由前端策略引擎结合个人持仓重新计算。
 - `partial:false`、`ai.status:unavailable`：本次全部 29 只成功，AI 简报未生成。
 
-**部署时序**：收盘 15:00 → 16:45 门槛 + Actions 排队 + ingest/build/测试 → 快照 17:58 生成、17:59 上传（北京时间）。即用户在 15:00-16:45 之间即使已收盘也只能看到**上一交易日**；16:45 之后还要等 CI 完成。这是「收盘后才看到」体验的直接来源之一。
+**部署时序**：收盘 15:00 → ingest.py 的 16:45 完成门槛 + 16:50 定时触发 + Actions 排队/refresh/build/verify → 快照 17:58 生成、17:59 上传（北京时间）。即用户在 15:00-16:45 之间即使已收盘也只能看到**上一交易日**；16:45 之后还要等 16:50 workflow 与 CI 完成。这是「收盘后才看到」体验的直接来源之一。
 
 ---
 
@@ -234,7 +237,7 @@ content-length: 701293
 
 1. **原站没有任何实时行情调用**：客户端和定时任务都走 `push2his` 日线（`klt=101`），页面上没有报价时间。实时层必须是**新增数据通道**（push2 ulist.np / stock.get / gtimg），不能靠改 klt 或缩短时间窗口假装实时。
 2. **客户端没有 16:45 门槛，也没有「bar 是否完成」的判定**：盘中手动刷新可能把东财「当日未完成日线」当成收盘价（该接口盘中返回行为【不确定】）。新实时层不得复用 `market.ts` 的日线路径；EOD 层保留 `market.ts` 原语义即可。
-3. **快照发布天然滞后**：16:45 门槛 + Actions 排队/build，线上实测 17:58 才生成；07:05 那班只更新上一交易日。UI 不能把「快照已加载」表述成「今日实时」。
+3. **快照发布天然滞后**：16:45 完成门槛 + 16:50 cron + Actions 排队/refresh/build，线上实测 17:58 才生成；07:50 那班只更新上一交易日。UI 不能把「快照已加载」表述成「今日实时」。
 4. **29 只 ≠ 全市场**；ETF 无 Sina 回退；`partial` 时个别代码不展示价格。实时层要覆盖「个人自选里不在公开清单的代码」：前端直连实时接口，但没有 EOD bars 时策略引擎无法给出 trigger/stop/target（`generateStrategy` 需要 ≥2 根 bar；`bars:[]` 的手动行情依赖手填指标）。**没有价位就不能编造提醒**。
 5. **静态 Pages + CDN + Service Worker**：`data/latest.json` 头 `cache-control: max-age=600`（最多 10 分钟旧）；App 虽用 `cache:'no-store'`，中间缓存仍可能给旧数据；`sw.js` 对同源 GET 成功即 `cache.put`，网络失败时回退缓存。结果是「数据源失败」可能表现为**悄悄使用旧缓存而不报错**（ReportStatus 只在 `generatedAt` 年龄 ≥48h 时警告）。验收「失败降级不冒充实时」必须专门覆盖这一路径。
 6. **首次访问没有个人股票**：`initialStocks` 为空，今日页主体是公开快照。UI 的实时 `codes` 必须在无个人清单时回退到 `report.quotes` 的代码（否则实时层无标的、提醒永远不触发），这已是 task-3 的要求。
@@ -243,7 +246,7 @@ content-length: 701293
 9. **公开信号字段被 `check_public.py` 锁死**（无 trigger/stop/target/股数）：盘中提醒只能由前端策略引擎（`generateStrategy` + 个人持仓）计算价位；不要期望快照里带价位。
 10. **个人持仓才有成本止损**：`costStop`/`trendStop` 只在 `stock.status==='holding'` 且满足条件时出现（`src/lib/strategy.ts:59-86`）；自选/历史记录的「止损提醒」只在策略给出 stop 时成立（breakout/pullback 才有）。
 11. **README 陈旧**：§7 的「预置 29 条」与空 `initialStocks` 矛盾，验收以代码为准。
-12. **Node 版本差异**：CI 用 Node 22（`.github/workflows/ci.yml:14`、`market-update.yml:25`），本机 `/opt/homebrew/bin/node` 为 v26.12.0；`--experimental-strip-types` 本机实测可用（snapshot 测试 3 pass）。最终验收要记录实际 Node 版本，避免「本机过、CI 不过」。
+12. **Node 版本差异**：CI 用 Node 22（`.github/workflows/ci.yml:14`），发布 workflow 用 Node 24（`.github/workflows/deploy-pages.yml:30`），本机 `/opt/homebrew/bin/node` 为 v26.12.0；`--experimental-strip-types` 本机实测可用（snapshot 测试 3 pass）。最终验收要记录实际 Node 版本，避免「本机过、CI 不过」。
 13. **重复的 `data/latest.json` 体积**：约 701 KB（29×160 bars）。实时层若仍在挂载时整包加载，移动端首屏成本不变；提醒层要用实时接口而非轮询快照。
 
 ---

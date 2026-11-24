@@ -108,7 +108,7 @@ async function main() {
     const url = request.url()
     const entry = { url: url.slice(0, 300), error: request.failure()?.errorText ?? '' }
     if (url.includes('push2his.eastmoney.com')) report.network.push2his.push({ kind: 'requestfailed', ...entry })
-    if (url.includes('web.ifzq.gtimg.cn')) report.network.tencentKline.push({ kind: 'requestfailed', ...entry })
+    if (url.includes('ifzq.gtimg.cn')) report.network.tencentKline.push({ kind: 'requestfailed', host: url.includes('web.ifzq.gtimg.cn') ? 'web' : 'bare', ...entry })
     if (url.includes('quotes.sina.cn')) report.network.sinaKline.push({ kind: 'requestfailed', ...entry })
   })
   page.on('response', async (response) => {
@@ -125,20 +125,29 @@ async function main() {
       }
       report.network.push2his.push(entry)
     }
-    if (url.includes('web.ifzq.gtimg.cn')) {
-      const entry = { kind: 'response', status: response.status(), url: url.slice(0, 300) }
+    if (url.includes('ifzq.gtimg.cn')) {
+      const entry = { kind: 'response', status: response.status(), host: url.includes('web.ifzq.gtimg.cn') ? 'web' : 'bare', url: url.slice(0, 300) }
       try {
-        const payload = await response.json()
-        const symbols = Object.keys(payload?.data ?? {})
-        const node = payload?.data?.[symbols[0]]
-        const rows = node?.qfqday || node?.day
-        if (Array.isArray(rows)) {
-          entry.qfqdayRows = rows.length
-          entry.firstDate = rows[0]?.[0]
-          entry.lastDate = rows.at(-1)?.[0]
+        const text = await response.text()
+        entry.bodySnippet = text.slice(0, 100)
+        try {
+          const payload = JSON.parse(text)
+          const symbols = Object.keys(payload?.data ?? {})
+          const node = payload?.data?.[symbols[0]]
+          const rows = node?.qfqday || node?.day
+          if (Array.isArray(rows)) {
+            entry.qfqdayRows = rows.length
+            entry.firstDate = rows[0]?.[0]
+            entry.lastDate = rows.at(-1)?.[0]
+          }
+        } catch {
+          // 腾讯可能返回 script/JSONP 文本（浏览器 fetch 被 CORS 拦后走脚本回退）
+          entry.scriptKline = /qfqday|"day"/.test(text)
+          entry.dateRows = (text.match(/\d{4}-\d{2}-\d{2}/g) ?? []).length
+          entry.bodySnippet = '（非 JSON：按 script/JSONP 文本解析）' + entry.bodySnippet
         }
       } catch {
-        entry.bodySnippet = '（非 JSON：可能是 501 WAF 挑战页或 CORS 失败）'
+        entry.bodySnippet = '（响应体读取失败）'
       }
       report.network.tencentKline.push(entry)
     }
@@ -148,11 +157,17 @@ async function main() {
         const text = await response.text()
         entry.bodySnippet = text.slice(0, 120)
         const match = /var\s+__sina_kline_[^=]+=\s*\(([\s\S]*)\)\s*;?\s*$/.exec(text.trim())
-        if (match) {
-          const rows = JSON.parse(match[1])
-          entry.rows = Array.isArray(rows) ? rows.length : 0
-          entry.firstDate = rows?.[0]?.day
-          entry.lastDate = rows?.at?.(-1)?.day
+        const raw = match ? match[1] : text
+        try {
+          const rows = JSON.parse(raw.trim())
+          if (Array.isArray(rows)) {
+            entry.rows = rows.length
+            entry.firstDate = rows[0]?.day
+            entry.lastDate = rows.at?.(-1)?.day
+          }
+        } catch {
+          entry.scriptKline = /"day"/.test(text)
+          entry.dateRows = (text.match(/\d{4}-\d{2}-\d{2}/g) ?? []).length
         }
       } catch {
         /* 忽略解析失败，仅记录状态 */
@@ -288,10 +303,10 @@ async function main() {
     const push2hisFailures = report.network.push2his.filter((entry) => entry.kind === 'requestfailed' || (entry.kind === 'response' && entry.status >= 400))
     const push2hisAttempts = report.network.push2his.filter((entry) => entry.kind === 'requestfailed' || entry.kind === 'response')
     const push2hisSuccesses = report.network.push2his.filter((entry) => entry.kind === 'response' && entry.status === 200 && entry.hasKlines === true)
-    const tencentSuccesses = report.network.tencentKline.filter((entry) => entry.kind === 'response' && entry.status === 200 && (entry.qfqdayRows ?? 0) >= 21)
+    const tencentSuccesses = report.network.tencentKline.filter((entry) => entry.kind === 'response' && entry.status === 200 && ((entry.qfqdayRows ?? 0) >= 21 || (entry.scriptKline && (entry.dateRows ?? 0) >= 21)))
     const tencentAttempts = report.network.tencentKline.filter((entry) => entry.kind === 'requestfailed' || entry.kind === 'response')
     const tencent501 = report.network.tencentKline.filter((entry) => entry.status === 501)
-    const sinaSuccesses = report.network.sinaKline.filter((entry) => entry.kind === 'response' && entry.status === 200 && (entry.rows ?? 0) >= 21)
+    const sinaSuccesses = report.network.sinaKline.filter((entry) => entry.kind === 'response' && entry.status === 200 && ((entry.rows ?? 0) >= 21 || (entry.scriptKline && (entry.dateRows ?? 0) >= 21)))
     const provider = quote.provider ?? ''
     const eastmoneyPrimarySuccess = push2hisSuccesses.length > 0
     assertion('东财 push2his 有请求（成功或失败均可，按实际记录）', push2hisAttempts.length > 0, `attempts=${push2hisAttempts.length}，成功(klines)=${push2hisSuccesses.length}，失败=${push2hisFailures.length}`)
