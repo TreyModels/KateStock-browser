@@ -1,0 +1,54 @@
+name: Refresh data and deploy to Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    # 16:50 Beijing (after close) — weekdays
+    - cron: '50 8 * * 1-5'
+    # 07:50 Beijing (pre-open) — weekdays
+    - cron: '50 23 * * 0-4'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Refresh public snapshot (retry once, fall back to committed last-good)
+        run: |
+          npm run refresh || (sleep 20 && npm run refresh) || echo "::warning::snapshot refresh failed; deploying committed last-good snapshot"
+      - name: Verify
+        run: bash scripts/verify.sh
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
