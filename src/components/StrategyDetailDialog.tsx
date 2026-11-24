@@ -40,6 +40,7 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
   const triggerDistance = triggerDistanceLabel(status?.distanceToTriggerPct ?? distanceToLevelPct(strategy.trigger, price))
   const stopDistance = stopDistanceLabel(status?.distanceToStopPct ?? distanceFromLevelPct(strategy.stop, price))
   const targetDistance = targetDistanceLabel(distanceToLevelPct(strategy.target, price))
+  const bearWatch = strategy.actionLabel === '熊市观望'
   const levels = [
     { label: '触发价', value: strategy.trigger, distance: triggerDistance, kind: 'trigger' as const },
     { label: '保护位', value: strategy.stop, distance: stopDistance, kind: 'stop' as const },
@@ -83,6 +84,7 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
         )}
         <Sparkline bars={strategy.bars} positive={changePct >= 0} large />
         <p className="text-[15px] leading-6">{strategy.summary}</p>
+        {bearWatch && <p className="strategy-bear-note">熊市：不加仓，只管理持仓/等结构修复</p>}
         <div className="grid grid-cols-3 gap-2">
           {levels.map(({ label, value, distance, kind }) => (
             <div className={`level-box${hits.includes(kind) ? ' level-box-hit' : ''}`} key={label}>
@@ -95,7 +97,7 @@ export function StrategyDetailDialog({ strategy, open, onOpenChange, liveQuote, 
         {strategy.suggestedShares !== undefined && (
           <div className="risk-ticket">
             <span>风险预算下的参考上限</span>
-            <strong>{strategy.suggestedShares} 股 · 约 {strategy.suggestedPositionPct}% 仓位</strong>
+            <strong>{strategy.suggestedShares > 0 ? `${strategy.suggestedShares} 股 · 约 ${strategy.suggestedPositionPct}% 仓位` : '不足 1 手（不足 100 股），暂不建仓'}</strong>
             <small>按整手向下取整，并受单笔风险与最大仓位双重限制。</small>
           </div>
         )}

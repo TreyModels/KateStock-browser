@@ -59,6 +59,7 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
   const targetDistance = targetDistanceLabel(targetDistancePct)
 
   const primaryHit = hits[0]
+  const bearWatch = strategy.actionLabel === '熊市观望'
   const hitSummary = hits.map((kind) => alertKindLabel[kind]).join(' · ')
   const quoteLine = liveQuote
     ? staleLive
@@ -95,6 +96,7 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
       )}
 
       <p className="mt-4 text-[15px] leading-6 text-foreground/80">{strategy.summary}</p>
+      {bearWatch && <p className="strategy-bear-note">熊市：不加仓，只管理持仓/等结构修复</p>}
 
       <div className="mt-4 grid grid-cols-3 gap-2 border-y border-border/80 py-3">
         <div className={`level-item${hits.includes('trigger') ? ' level-hit level-hit-trigger' : ''}`}>
@@ -121,8 +123,8 @@ export function StrategyCard({ strategy, liveQuote, liveError, phase, onOpen }: 
         <div className="shrink-0 text-right">
           {strategy.suggestedShares !== undefined && (
             <>
-              <span className="block text-xs text-muted-foreground">参考上限</span>
-              <span className="number-text text-sm font-semibold">{strategy.suggestedShares} 股</span>
+              <span className="block text-xs text-muted-foreground">{strategy.suggestedShares > 0 ? '参考上限' : '参考仓位'}</span>
+              <span className="number-text text-sm font-semibold">{strategy.suggestedShares > 0 ? `${strategy.suggestedShares} 股` : '不足 1 手'}</span>
             </>
           )}
           <button type="button" className="mt-1 flex min-h-11 w-full items-center justify-end gap-1 text-sm font-medium text-primary" onClick={onOpen}>

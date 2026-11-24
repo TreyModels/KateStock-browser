@@ -20,6 +20,7 @@ import { StrategyDetailDialog } from '@/components/StrategyDetailDialog'
 import { LiveAlertsPanel } from '@/components/live/LiveAlertsPanel'
 import { LivePrice } from '@/components/live/LivePrice'
 import { MarketStatusBar } from '@/components/live/MarketStatusBar'
+import { StrategyRanking } from '@/components/live/StrategyRanking'
 import { isLivePricePhase } from '@/components/live/quote-utils'
 import { useLiveAlerts } from '@/hooks/useLiveAlerts'
 import { useLiveQuotes } from '@/hooks/useLiveQuotes'
@@ -27,10 +28,12 @@ import { useRegime } from '@/hooks/useRegime'
 import { useLocalData } from '@/hooks/useLocalData'
 import { getMarketPhase } from '@/lib/live'
 import { isHoldingStrategy } from '@/lib/live-signals'
+import { applyRegimeFilter } from '@/lib/regime-filter'
+import { rankStrategies } from '@/lib/strategy-ranking'
 import { readRegimeCache } from '@/lib/regime'
 import { fetchQuotes } from '@/lib/market'
 import { generateStrategy } from '@/lib/strategy'
-import type { MarketPhase, Quote, Stock, StockStatus } from '@/types'
+import type { MarketPhase, Quote, Stock, StockStatus, StrategyAction } from '@/types'
 import './App.css'
 
 type View = 'today' | 'stocks' | 'backtest' | 'rules' | 'settings' | 'library'
@@ -54,6 +57,8 @@ function App() {
   const { data, setData, resetData } = useLocalData()
   const [view, setView] = useState<View>('today')
   const [signalFilter, setSignalFilter] = useState<SignalFilter>('all')
+  const [rankingSelection, setRankingSelection] = useState<{ action: StrategyAction; id: string } | null>(null)
+  const strategyListRef = useRef<HTMLElement>(null)
   const [stockFilter, setStockFilter] = useState<'all' | StockStatus>('all')
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -76,9 +81,6 @@ function App() {
     return quote && /^(600|601|603|605|000|001|002|510|511|512|513|515|516|518|588|159)\d{3}$/.test(stock.code) ? [generateStrategy(stock, quote, data.settings)] : []
   }), [data.stocks, data.quotes, data.settings])
 
-  const selectedStrategy = strategies.find((strategy) => strategy.code === selectedCode)
-  const buyCount = strategies.filter((item) => item.action === 'breakout' || item.action === 'pullback').length
-  const riskCount = strategies.filter((item) => item.action === 'reduce' || item.action === 'stop').length
   const holdingCount = data.stocks.filter((stock) => stock.status === 'holding').length
   const hasPersonalStocks = data.stocks.length > 0
   const dateText = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
@@ -105,6 +107,8 @@ function App() {
   }, [data.stocks, report])
 
   const { liveQuotes, updatedAt: liveUpdatedAt, lastAttemptAt: liveLastAttemptAt, loading: liveLoading, errors: liveErrors, refresh: refreshLive } = useLiveQuotes(liveCodes, { enabled: liveAutoRefresh || manualLiveRefresh })
+  // 盯盘提醒必须用未过滤的 strategies：live-signals 对 action=watch 不发提醒，
+  // 若传 displayStrategies，熊市里持仓股的 stop/target 提醒会消失（N-1 回归）。
   const { alerts, dismiss, clear, permission, requestPermission, soundEnabled, toggleSound } = useLiveAlerts(strategies, liveQuotes)
 
   /* ── 大盘状态 → 页面主题 ────────────────────────────────────
@@ -142,6 +146,24 @@ function App() {
     error: regimeError,
     refresh: refreshRegime,
     sampleSize: report ? Object.keys(report.quotes).length : undefined,
+  }
+
+  // 展示层用 regime 过滤后的列表（熊市禁买/震荡半仓）；提醒层仍用未过滤 strategies（见上方注释）。
+  const displayStrategies = useMemo(() => applyRegimeFilter(strategies, regimeDetail?.regime), [strategies, regimeDetail?.regime])
+  const selectedStrategy = displayStrategies.find((strategy) => strategy.code === selectedCode)
+  const buyCount = displayStrategies.filter((item) => item.action === 'breakout' || item.action === 'pullback').length
+  const riskCount = displayStrategies.filter((item) => item.action === 'reduce' || item.action === 'stop').length
+  const rankingRows = useMemo(() => rankStrategies({
+    strategies,
+    regime: regimeDetail?.regime ?? 'range',
+    breadthPct: regimeDetail?.breadthPct,
+  }), [strategies, regimeDetail?.regime, regimeDetail?.breadthPct])
+  const scrollToStrategyList = () => {
+    strategyListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  const selectRankingAction = (action: StrategyAction | null, id?: string) => {
+    setRankingSelection(action && id ? { action, id } : null)
+    if (action) setSignalFilter('all')
   }
 
   // 最近报价时间只取 provider 的行情时间（P1-7）：优先 hook 的 updatedAt（本批成功报价的最新 provider 时间），
@@ -252,7 +274,8 @@ function App() {
     toast.success('已从清单移除')
   }
 
-  const filteredStrategies = strategies.filter((strategy) => {
+  const filteredStrategies = displayStrategies.filter((strategy) => {
+    if (rankingSelection) return strategy.action === rankingSelection.action
     if (signalFilter === 'buy') return strategy.action === 'breakout' || strategy.action === 'pullback'
     if (signalFilter === 'risk') return strategy.action === 'reduce' || strategy.action === 'stop'
     if (signalFilter === 'wait') return strategy.action === 'watch' || strategy.action === 'hold'
@@ -374,6 +397,14 @@ function App() {
                 onRefresh={requestLiveRefresh}
                 regimeInfo={regimeInfo}
               />
+              <StrategyRanking
+                rows={rankingRows}
+                regime={regimeDetail?.regime}
+                selectedAction={rankingSelection?.action ?? null}
+                selectedId={rankingSelection?.id ?? null}
+                onSelect={selectRankingAction}
+                onScrollToList={scrollToStrategyList}
+              />
               {data.goldValueCny !== undefined && <section className="report-status"><strong>黄金产品 · 手动参考价值</strong><p>¥{money.format(data.goldValueCny)} · 非实时；未确认产品代码</p></section>}
               <ReportStatus report={report} loading={reportLoading} cached={reportCached} error={reportError} onRetry={() => void loadReport()} />
               {!hasPersonalStocks && (
@@ -418,19 +449,19 @@ function App() {
                   <div><strong>{buyCount}</strong><span>关注机会</span></div>
                   <div><strong>{riskCount}</strong><span>风险信号</span></div>
                   <div><strong>{holdingCount}</strong><span>当前持仓</span></div>
-                  <div><strong>{strategies.length}<small>/{data.stocks.length}</small></strong><span>已生成策略</span></div>
+                  <div><strong>{displayStrategies.length}<small>/{data.stocks.length}</small></strong><span>已生成策略</span></div>
                 </div>
               </section>
 
               <div className="today-grid">
-                <section>
+                <section ref={strategyListRef}>
                   <div className="section-heading">
                     <div><span className="section-kicker">TODAY'S SIGNALS</span><h2>今日优先清单{hasPersonalStocks && <span className="privacy-badge">本地保存 · 不上传</span>}</h2></div>
-                    <span className="data-stamp">{liveLoading ? <LoaderCircle size={15} className="spin" /> : isLivePricePhase(phase) && liveSuccessCount ? <Activity size={15} /> : <Database size={15} />}{isLivePricePhase(phase) && liveSuccessCount ? `盘中 ${liveSuccessCount} 只${liveFailedCodes.length ? ` · 未刷新 ${liveFailedCodes.length}` : ''}` : strategies.length ? '策略已计算' : '等待行情'}</span>
+                    <span className="data-stamp">{liveLoading ? <LoaderCircle size={15} className="spin" /> : isLivePricePhase(phase) && liveSuccessCount ? <Activity size={15} /> : <Database size={15} />}{isLivePricePhase(phase) && liveSuccessCount ? `盘中 ${liveSuccessCount} 只${liveFailedCodes.length ? ` · 未刷新 ${liveFailedCodes.length}` : ''}` : displayStrategies.length ? '策略已计算' : '等待行情'}</span>
                   </div>
                   <div className="filter-tabs" role="tablist" aria-label="策略信号筛选">
                     {([['all', '全部'], ['buy', '机会'], ['risk', '风险'], ['wait', '等待']] as Array<[SignalFilter, string]>).map(([id, label]) => (
-                      <button key={id} role="tab" aria-selected={signalFilter === id} className={signalFilter === id ? 'active' : ''} onClick={() => setSignalFilter(id)}>{label}</button>
+                      <button key={id} role="tab" aria-selected={signalFilter === id} className={signalFilter === id ? 'active' : ''} onClick={() => { setSignalFilter(id); setRankingSelection(null) }}>{label}</button>
                     ))}
                   </div>
 
@@ -441,9 +472,9 @@ function App() {
                   ) : (
                     <div className="empty-state">
                       <Gauge size={30} />
-                      <h3>{strategies.length ? '当前筛选下没有信号' : '还没有生成策略'}</h3>
-                      <p>{strategies.length ? '切换筛选查看其他股票。' : '刷新行情，或在股票页手动录入现价与指标。'}</p>
-                      <button className="button-primary" onClick={() => strategies.length ? setSignalFilter('all') : void refreshCodes()}>{strategies.length ? '查看全部' : '获取行情'}</button>
+                      <h3>{displayStrategies.length ? '当前筛选下没有信号' : '还没有生成策略'}</h3>
+                      <p>{displayStrategies.length ? '切换筛选查看其他股票。' : '刷新行情，或在股票页手动录入现价与指标。'}</p>
+                      <button className="button-primary" onClick={() => displayStrategies.length ? setSignalFilter('all') : void refreshCodes()}>{displayStrategies.length ? '查看全部' : '获取行情'}</button>
                     </div>
                   )}
                 </section>
